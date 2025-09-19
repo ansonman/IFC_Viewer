@@ -1,0 +1,27 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <PlatformTarget>x64</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+  </PropertyGroup>
+
+  <ItemGroup>
+  <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+  <PackageReference Include="Xbim.Essentials" Version="6.0.442" />
+  <PackageReference Include="Xbim.Geometry" Version="5.1.820" />
+  <PackageReference Include="Xbim.WindowsUI" Version="5.1.228" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.1" />
+  </ItemGroup>
+
+  <!-- 移除專案根目錄下重複的 MainWindow（實際使用 Views/MainWindow.xaml） -->
+  <ItemGroup>
+    <Page Remove="MainWindow.xaml" />
+    <Compile Remove="MainWindow.xaml.cs" />
+  </ItemGroup>
+
+</Project>

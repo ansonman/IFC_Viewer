@@ -1,0 +1,60 @@
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Build outputs
+bin/
+obj/
+**/bin/
+**/obj/
+app/IFC_Viewer_00/bin/
+app/IFC_Viewer_00/obj/
+
+# Logs
+*.log
+app/IFC_Viewer_00/bin/Debug/net8.0-windows/viewer3d.log
+app/IFC_Viewer_00/bin/Release/net8.0-windows/viewer3d.log
+viewer3d.log
+
+# Packages
+packages/
+*.nupkg
+*.snupkg
+
+# Rider/VS Code
+.idea/
+.vscode/
+
+# Embedded repos or externals
+external/
+
+# Test results
+TestResults/
+*.coverage
+*.coveragexml
+
+# Others
+*.cache
+*.tmp
+*.db
+*.opendb
+*.sqlite
+*.pdb
+*.mdb
+*.mp4
+*.avi
+*.png
+*.jpg
+*.jpeg
+
+# IFC models and logs (avoid pushing large binaries)
+*.ifc
+*.ifc.log
+New Home.ifc
+LargeProject.ifc
+Project1.ifc
+SAMPLE_*.ifc
+
