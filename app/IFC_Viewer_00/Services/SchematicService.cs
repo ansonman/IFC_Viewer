@@ -6,7 +6,6 @@ using System.Windows.Media.Media3D;
 using IFC_Viewer_00.Models;
 using Xbim.Common;
 using Xbim.Ifc;
-using Xbim.Common;
 using Xbim.Ifc4.Interfaces;
 
 namespace IFC_Viewer_00.Services
@@ -19,6 +18,7 @@ namespace IFC_Viewer_00.Services
             if (ifcModel == null) throw new ArgumentNullException(nameof(ifcModel));
 
             var data = new SchematicData();
+            var visited = new HashSet<int>(); // 使用 EntityLabel 去重
 
             // Port → Node 索引
             var portToNode = new Dictionary<IIfcPort, SchematicNode>();
@@ -27,6 +27,8 @@ namespace IFC_Viewer_00.Services
             var distElems = ifcModel.Instances.OfType<IIfcDistributionElement>().ToList();
             foreach (var elem in distElems)
             {
+                if (TryGetLabel(elem, out var lbl) && !visited.Add(lbl))
+                    continue;
                 var node = CreateNodeFromElement(elem);
                 data.Nodes.Add(node);
 
@@ -42,6 +44,8 @@ namespace IFC_Viewer_00.Services
             var segments = ifcModel.Instances.OfType<IIfcPipeSegment>().ToList();
             foreach (var seg in segments)
             {
+                if (TryGetLabel(seg, out var lbl) && !visited.Add(lbl))
+                    continue;
                 var node = CreateNodeFromElement(seg);
                 data.Nodes.Add(node);
 
@@ -77,6 +81,17 @@ namespace IFC_Viewer_00.Services
             }
 
             return Task.FromResult(data);
+        }
+
+        private static bool TryGetLabel(IIfcElement elem, out int label)
+        {
+            if (elem is IPersistEntity pe)
+            {
+                label = pe.EntityLabel;
+                return true;
+            }
+            label = -1;
+            return false;
         }
 
         private static SchematicNode CreateNodeFromElement(IIfcElement elem)

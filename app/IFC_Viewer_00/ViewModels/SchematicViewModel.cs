@@ -28,12 +28,23 @@ namespace IFC_Viewer_00.ViewModels
             Edges.Clear();
 
             // 建立 NodeView 並以簡單縮放投影 X/Y
-            var nodeMap = data.Nodes.ToDictionary(n => n.Id, n => new SchematicNodeView
+            // 為避免 Id 衝突，優先使用實體參照或 EntityLabel 作為 key
+            var nodeMap = new Dictionary<object, SchematicNodeView>();
+            foreach (var n in data.Nodes)
             {
-                Node = n,
-                X = n.Position3D.X * Scale,
-                Y = -n.Position3D.Y * Scale // 反轉 Y 以符合 UI 座標
-            });
+                object key = (object?)n.Entity ?? (object)n.Id;
+                if (nodeMap.ContainsKey(key))
+                {
+                    // 退而求其次：用組合鍵防止碰撞
+                    key = (n.Entity != null) ? (object)$"{n.Entity.EntityLabel}:{n.Id}" : (object)$"dup:{n.Id}:{nodeMap.Count}";
+                }
+                nodeMap[key] = new SchematicNodeView
+                {
+                    Node = n,
+                    X = n.Position3D.X * Scale,
+                    Y = -n.Position3D.Y * Scale
+                };
+            }
 
             foreach (var nv in nodeMap.Values)
                 Nodes.Add(nv);
@@ -42,8 +53,9 @@ namespace IFC_Viewer_00.ViewModels
             foreach (var e in data.Edges)
             {
                 if (e.StartNode == null || e.EndNode == null) continue;
-                if (!nodeMap.TryGetValue(e.StartNode.Id, out var s)) continue;
-                if (!nodeMap.TryGetValue(e.EndNode.Id, out var t)) continue;
+                var s = FindNodeView(nodeMap, e.StartNode);
+                var t = FindNodeView(nodeMap, e.EndNode);
+                if (s == null || t == null) continue;
                 Edges.Add(new SchematicEdgeView
                 {
                     Edge = e,
@@ -51,6 +63,19 @@ namespace IFC_Viewer_00.ViewModels
                     End = t
                 });
             }
+        }
+
+        private static SchematicNodeView? FindNodeView(Dictionary<object, SchematicNodeView> map, SchematicNode node)
+        {
+            if (node.Entity != null && map.TryGetValue(node.Entity, out var byEnt))
+                return byEnt;
+            // 回退：比對 Id 或組合鍵
+            foreach (var kv in map)
+            {
+                if (ReferenceEquals(kv.Value.Node, node)) return kv.Value;
+                if (!string.IsNullOrEmpty(node.Id) && kv.Value.Node.Id == node.Id) return kv.Value;
+            }
+            return null;
         }
     }
 
