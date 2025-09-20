@@ -15,16 +15,23 @@
 - xBIM: Xbim.Presentation (WindowsUI), Xbim.Essentials, Xbim.ModelGeometry.Scene, Xbim.Geometry.Engine.Interop
 - HelixToolkit.Wpf
 
-## 原理圖生成模組（進行中）
-- 目標：從已載入的 IFC 模型提取管線拓撲，生成 2D 符號化原理圖
-- 架構：遵循 MVVM 與 Services 分層，提供 `SchematicService.GenerateAsync(IStepModel)` 產生 `SchematicData`
-- 現況：
-  - 已完成資料模型（`SchematicNode/Edge/Data`）
-  - 後續將新增 `SchematicService`、`SchematicView`、`SchematicViewModel` 與主視窗上的「生成原理圖」按鈕
-- MVP 行為：
-  - 節點：`IfcPipeSegment`、`IfcPipeFitting`、`IfcValve` 等
-  - 拓撲：優先使用 `IfcRelConnectsPorts`；必要時回退幾何鄰近性
-  - 佈局：先採 3D XY 投影為 `Position2D`，後續評估自動佈局（MSAGL 等）
+## 原理圖生成模組（已提供 MVP）
+- 目標：從已載入的 IFC 模型提取管線拓撲，生成 2D 符號化原理圖。
+- 架構：遵循 MVVM + Services，`SchematicService.GenerateTopologyAsync(IModel)` 產生 `SchematicData`（Nodes/Edges）。
+- 行為：
+  - 節點來源：`IIfcDistributionElement`、`IIfcPipeSegment` 等；使用 `EntityLabel` 去重。
+  - 拓撲邊：依 `IfcRelConnectsPorts` 的 `RelatingPort`/`RelatedPort` 建立連線，透過 `HasPorts` 對回節點。
+  - 位置：從 `ObjectPlacement → IfcLocalPlacement → IfcAxis2Placement3D` 取得 XYZ，初始投影至 2D（XY）。
+  - 自動佈局：啟動後在初始位置基礎上執行力導向迭代，降低疊線與重疊。
+  - 分色：依 IfcType 產生節點顏色，邊線使用更深色階。
+  - 互動：點擊節點/邊會同步 3D 高亮，並嘗試執行 `ZoomSelected`。
+
+### 使用方式
+1. 載入 IFC 後，點工具列的「生成原理圖」。
+2. 觀察節點與邊線出現並自動展開；不同 IfcType 呈現不同顏色。
+3. 在原理圖點選節點（或邊），主畫面的 3D 視圖會高亮相對應物件並縮放至選取。
+
+> 限制：力導向為快速近似；大型網路可調低迭代次數或調整 `SchematicViewModel.Scale`。未實作自動避線與群集，但可後續擴充。
 
 ## 建置與執行
 - 以 PowerShell 在專案根目錄執行：

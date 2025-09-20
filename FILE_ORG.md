@@ -171,16 +171,16 @@ app/IFC_Viewer_00/
 - 根目錄
   - `SchematicModule_Report.md`：原理圖模組的階段性報告（進度、挑戰、截圖、下一步）
 
-- `app/IFC_Viewer_00/Models/`
-  - `SchematicNode.cs`：原理圖節點資料模型（Id/Name/IfcType/Position2D/Children）
-  - `SchematicEdge.cs`：原理圖連線資料模型（Id/StartNode/EndNode）
-  - `SchematicData.cs`：原理圖資料封裝（Nodes/Edges）
+– `app/IFC_Viewer_00/Models/`
+  - `SchematicNode.cs`：原理圖節點（Id/Name/IfcType/Position3D、Entity 參照）。
+  - `SchematicEdge.cs`：原理圖連線（Id/StartNode/EndNode、Entity 參照）。
+  - `SchematicData.cs`：原理圖資料封裝（Nodes/Edges，唯讀 List）。
 
-- `app/IFC_Viewer_00/Services/`
-  - `SchematicService.cs`（規劃中）：`GenerateAsync(IStepModel)` 解析 Ifc 管線與 `IfcRelConnectsPorts` 生成拓撲
+– `app/IFC_Viewer_00/Services/`
+  - `SchematicService.cs`：`GenerateTopologyAsync(IModel)` 解析 `IIfcDistributionElement` 與 `IfcRelConnectsPorts` 生成拓撲；以 EntityLabel 去重；位置取自 LocalPlacement。
 
-- `app/IFC_Viewer_00/ViewModels/`
-  - `SchematicViewModel.cs`（規劃中）：持有 `ObservableCollection<SchematicNode>`、`ObservableCollection<SchematicEdge>`，提供 `LoadSchematicAsync`
+– `app/IFC_Viewer_00/ViewModels/`
+  - `SchematicViewModel.cs`：載入拓撲、投影 2D，提供 NodeView/EdgeView（含 Brush）；內建力導向自動佈局與點擊命令；`RequestHighlight` 事件給視窗層同步 3D。
 
-- `app/IFC_Viewer_00/Views/`
-  - `SchematicView.xaml`（規劃中）：Canvas + ItemsControl 呈現節點（Ellipse 綁定 `Position2D`）與後續邊線
+– `app/IFC_Viewer_00/Views/`
+  - `SchematicView.xaml` / `.xaml.cs`：Canvas + ItemsControl 呈現節點/邊；點擊節點/邊透過命令觸發 `RequestHighlight`，由視窗轉呼叫 3D 服務高亮與縮放；主視窗工具列有「生成原理圖」。

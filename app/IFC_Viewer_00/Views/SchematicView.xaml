@@ -36,7 +36,16 @@
                                   Y1="{Binding Start.Y}"
                                   X2="{Binding End.X}"
                                   Y2="{Binding End.Y}"
-                                  Stroke="DarkSlateGray" StrokeThickness="2"/>
+                                  StrokeThickness="2">
+                                <Line.Style>
+                                    <Style TargetType="Line">
+                                        <Setter Property="Stroke" Value="{Binding EdgeBrush}"/>
+                                    </Style>
+                                </Line.Style>
+                                <Line.InputBindings>
+                                    <MouseBinding MouseAction="LeftClick" Command="{Binding DataContext.EdgeClickCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}"/>
+                                </Line.InputBindings>
+                            </Line>
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>
@@ -56,7 +65,15 @@
                     </ItemsControl.ItemContainerStyle>
                     <ItemsControl.ItemTemplate>
                         <DataTemplate>
-                            <Border Background="#FF2E86C1" CornerRadius="4" Padding="6" ToolTip="{Binding Node.Name}">
+                            <Border CornerRadius="4" Padding="6" ToolTip="{Binding Node.Name}">
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Setter Property="Background" Value="{Binding NodeBrush}"/>
+                                    </Style>
+                                </Border.Style>
+                                <Border.InputBindings>
+                                    <MouseBinding MouseAction="LeftClick" Command="{Binding DataContext.NodeClickCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}"/>
+                                </Border.InputBindings>
                                 <TextBlock Text="{Binding Node.IfcType}" Foreground="White"/>
                             </Border>
                         </DataTemplate>

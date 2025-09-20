@@ -1,5 +1,26 @@
 # DEVELOPMENT LOG
 
+## 2025-09-20 互動測試結果與 Schematic 修正
+
+本日完成一輪互動測試，重點結果如下：
+
+- 3D 右鍵 Isolate/Hide/ShowAll：成功，場景可見度正確改變；ShowAll 後視角回到可視範圍。
+- 3D 雙擊 ZoomSelected：成功，樹狀與屬性面板會同步更新。
+- Schematic 模組修正：針對「An item with the same key has already been added」重複鍵例外，完成兩處修補並驗證建置通過：
+  - 服務層去重：以 IPersistEntity.EntityLabel 建立 visited 集合，防止同一實體同時以 IIfcDistributionElement 與 IIfcPipeSegment 路徑重複成為節點。
+  - ViewModel 鍵值強化：NodeView 映射優先採用 node.Entity 物件參照為 key，必要時退回到「EntityLabel:Id」組合鍵；邊連線時優先以 Entity 配對，避免 Id 撞鍵。
+  - 相關提交：e621800 fix(schematic): dedupe nodes by EntityLabel and harden NodeView map keys…
+
+品質狀態：
+- Build：PASS（NU1701 相容性警告仍在，可接受）。
+- Run：PASS（右鍵與雙擊互動均驗證成功）。
+
+下一步建議：
+- 原理圖佈局從 XY 投影升級為自動排版（例如 MSAGL），加入 IfcType 分色與選取同步 3D 高亮。
+- 覆蓋無 Port 元件之拓撲推斷（幾何鄰近性 fallback）。
+
+# DEVELOPMENT LOG
+
 日期: 2025-09-19
 
 ## 互動與功能修正
