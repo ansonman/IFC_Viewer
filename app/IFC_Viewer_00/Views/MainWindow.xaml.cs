@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Threading;
 using System.ComponentModel;
 using System.Windows.Media;
+using IFC_Viewer_00.ViewModels;
 
 namespace IFC_Viewer_00.Views
 {
@@ -189,6 +190,36 @@ namespace IFC_Viewer_00.Views
             else if (host?.Content != null)
             {
                 try { host.Content.GetType().GetMethod("ShowAll")?.Invoke(host.Content, null); } catch { }
+            }
+        }
+
+        private async void GenerateSchematic_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                // 從 ViewModel 取得 IfcStore 與 IModel
+                var vm = this.DataContext as dynamic;
+                Xbim.Ifc.IfcStore? store = null;
+                try { store = (Xbim.Ifc.IfcStore?)vm?.Model; } catch { }
+                if (store == null)
+                {
+                    MessageBox.Show(this, "尚未載入模型", "原理圖", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                var iModel = (Xbim.Common.IModel)store;
+
+                // 建立 VM 與載入資料
+                var service = new SchematicService();
+                var svm = new SchematicViewModel(service);
+                await svm.LoadAsync(iModel);
+
+                // 顯示視窗
+                var win = new SchematicView { DataContext = svm, Owner = this };
+                win.Show();
+            }
+            catch (System.Exception ex)
+            {
+                MessageBox.Show(this, $"原理圖產生失敗: {ex.Message}", "原理圖", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 

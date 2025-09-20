@@ -135,6 +135,40 @@ Development Log
 2) 若 Scenes 仍為 0，對照 `external/XbimWindowsUI/Xbim.Presentation/DrawingControl3D.xaml.cs` 的 `LoadGeometry()` 實作，逐步比對觸發點（`Model` setter → `ReloadModel` → `LoadGeometry` → `RecalculateView`）。
 3) 若為單位/座標偏移：嘗試 `WcsAdjusted = true` 後再 `ViewHome()`；或讀取 `_viewBounds` 記錄其大小與中心。
 4) 若測試仍不穩定：在測試前先關閉已執行中的 app.exe，避免檔案鎖定；或在測試使用 fake 控制項降低圖形依賴。
+
+---
+
+# 2025-09-20：原理圖生成模組（Schematic）啟動與任務 1 完成
+
+本日啟動「從 IFC 模型生成原理圖」模組的 Sprint：
+
+完成事項
+--------
+- 任務 1：資料模型與封裝
+  - 新增 `app/IFC_Viewer_00/Models/SchematicNode.cs`：Id/Name/IfcType/Position2D(點)/Children
+  - 新增 `app/IFC_Viewer_00/Models/SchematicEdge.cs`：Id/StartNode/EndNode
+  - 新增 `app/IFC_Viewer_00/Models/SchematicData.cs`：Nodes/Edges 集合封裝
+- 新增報告模板：`SchematicModule_Report.md`（根目錄），用於記錄每階段進度與問題
+
+設計重點 / 契約
+----------------
+- 服務介面（規劃中）：`SchematicService.GenerateAsync(IStepModel ifcModel)` 回傳 `SchematicData`
+  - 節點來源：`IfcPipeSegment`、`IfcPipeFitting`、`IfcValve` 等管線要素
+  - 拓撲建立：優先使用 `IfcRelConnectsPorts`；必要時回退幾何鄰近性
+  - 定位策略（MVP）：先用 3D 幾何（或 LocalPlacement）之 XY 投影作為 `Position2D`
+
+下一步（明日計畫）
+------------------
+1) 任務 2：建立 `Services/SchematicService.cs` 並實作 `GenerateAsync`
+   - 遍歷管線要素與 Ports → 以 `IfcRelConnectsPorts` 建立連線 → 產生 `SchematicNode/Edge`
+   - 2D 位置：先取構件幾何/包圍盒中心的 XY（暫不做佈局）
+2) 任務 3：`Views/SchematicView.xaml` Canvas + ItemsControl（Ellipse 綁 Position2D）
+3) 任務 4：`ViewModels/SchematicViewModel.cs` 與主視窗命令整合，按鈕觸發彈窗顯示
+
+風險與注意事項
+----------------
+- 不同 IFC 版本/資料品質：可能存在沒有 Ports 的構件或關聯缺漏，需要備援的幾何鄰近性分析
+- 2D 佈局：XY 直投可能重疊；之後評估導入自動佈局（例如 MSAGL）
 # 開發記錄（2025/09/17）
 
 ## Sprint 1：核心互動體驗增強

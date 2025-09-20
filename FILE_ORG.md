@@ -162,26 +162,25 @@ app/IFC_Viewer_00/
   - FakeViewerControl.cs（若有）：測試用假控制項，避免對實體 Xbim.WindowsUI 的強依賴。
   - 測試聚焦於：模型載入流程、服務層是否把 IfcStore 傳遞到控制層（檢查 Model/Tag/LastAssignedModel）。
 
-# File Organization
+---
 
-## 目錄總覽
-- `app/IFC_Viewer_00/`
-  - `IFC_Viewer_00.csproj`：WPF 應用程式專案
-  - `Services/StrongWindowsUiViewer3DService.cs`：核心 3D 服務（強型別包裝 DrawingControl3D）
-  - `Services/WindowsUiViewer3DService.cs`：較簡化的備援服務（反射路徑較多）
-  - `ViewModels/MainViewModel.cs`：載入模型、命令（Isolate/Hide/ShowAll）、屬性面板、樹狀結構
-  - `Views/MainWindow.xaml(.cs)`：主視窗，建立與載入 DrawingControl3D，滑鼠點選/右鍵選單/相機等
-  - `App.xaml(.cs)`：啟動與 Trace 初始化（輸出 `viewer3d.log`）
-- 根目錄文件
-  - `README.md`：概述、建置與操作說明
-  - `DEVELOPMENT_LOG.md`：開發歷程與 Sprint 1 說明
-  - `FILE_ORG.md`：目錄與關鍵檔案
+## 新增：原理圖模組檔案（2025-09-20）
 
-## 日誌位置
-- Debug 執行時：`app/IFC_Viewer_00/bin/Debug/net8.0-windows/viewer3d.log`
+為支援「從 IFC 模型生成原理圖（Schematic）」功能，新增下列檔案：
 
-## 右鍵命令繫結
-- 右鍵命令由 View 綁定至 `MainViewModel`，再呼叫 `IViewer3DService` 的 `Isolate/Hide/ShowAll` 實作。
-- `StrongWindowsUiViewer3DService` 會：
-  - 透過集合（IsolateInstances/IsolatedInstances、HiddenInstances/HiddenEntities）修改狀態
-  - 呼叫 `ReloadModel(...)` 與相機方法，並輸出 Trace 記錄
+- 根目錄
+  - `SchematicModule_Report.md`：原理圖模組的階段性報告（進度、挑戰、截圖、下一步）
+
+- `app/IFC_Viewer_00/Models/`
+  - `SchematicNode.cs`：原理圖節點資料模型（Id/Name/IfcType/Position2D/Children）
+  - `SchematicEdge.cs`：原理圖連線資料模型（Id/StartNode/EndNode）
+  - `SchematicData.cs`：原理圖資料封裝（Nodes/Edges）
+
+- `app/IFC_Viewer_00/Services/`
+  - `SchematicService.cs`（規劃中）：`GenerateAsync(IStepModel)` 解析 Ifc 管線與 `IfcRelConnectsPorts` 生成拓撲
+
+- `app/IFC_Viewer_00/ViewModels/`
+  - `SchematicViewModel.cs`（規劃中）：持有 `ObservableCollection<SchematicNode>`、`ObservableCollection<SchematicEdge>`，提供 `LoadSchematicAsync`
+
+- `app/IFC_Viewer_00/Views/`
+  - `SchematicView.xaml`（規劃中）：Canvas + ItemsControl 呈現節點（Ellipse 綁定 `Position2D`）與後續邊線

@@ -15,6 +15,17 @@
 - xBIM: Xbim.Presentation (WindowsUI), Xbim.Essentials, Xbim.ModelGeometry.Scene, Xbim.Geometry.Engine.Interop
 - HelixToolkit.Wpf
 
+## 原理圖生成模組（進行中）
+- 目標：從已載入的 IFC 模型提取管線拓撲，生成 2D 符號化原理圖
+- 架構：遵循 MVVM 與 Services 分層，提供 `SchematicService.GenerateAsync(IStepModel)` 產生 `SchematicData`
+- 現況：
+  - 已完成資料模型（`SchematicNode/Edge/Data`）
+  - 後續將新增 `SchematicService`、`SchematicView`、`SchematicViewModel` 與主視窗上的「生成原理圖」按鈕
+- MVP 行為：
+  - 節點：`IfcPipeSegment`、`IfcPipeFitting`、`IfcValve` 等
+  - 拓撲：優先使用 `IfcRelConnectsPorts`；必要時回退幾何鄰近性
+  - 佈局：先採 3D XY 投影為 `Position2D`，後續評估自動佈局（MSAGL 等）
+
 ## 建置與執行
 - 以 PowerShell 在專案根目錄執行：
 

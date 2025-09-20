@@ -37,6 +37,7 @@
             <Button x:Name="BtnResetView" Content="重設視角" Margin="0,0,8,0" Padding="10,4" Click="ResetView_Click" />
             <Button x:Name="BtnShowAll" Content="顯示全部" Margin="0,0,16,0" Padding="10,4" Click="ShowAll_Click" />
             <CheckBox x:Name="ChkShowFps" Content="Show FPS" VerticalAlignment="Center" Click="ChkShowFps_Click" />
+            <Button x:Name="BtnGenerateSchematic" Content="生成原理圖" Margin="16,0,0,0" Padding="10,4" Click="GenerateSchematic_Click" />
         </StackPanel>
         
         <!-- 主內容區 -->
