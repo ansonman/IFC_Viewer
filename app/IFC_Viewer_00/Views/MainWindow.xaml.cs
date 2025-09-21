@@ -7,6 +7,8 @@ using System.Windows.Threading;
 using System.ComponentModel;
 using System.Windows.Media;
 using IFC_Viewer_00.ViewModels;
+using System.Windows.Input;
+using System.Collections.ObjectModel;
 
 namespace IFC_Viewer_00.Views
 {
@@ -17,6 +19,7 @@ namespace IFC_Viewer_00.Views
     public partial class MainWindow : Window
     {
         private readonly IViewer3DService _viewerService;
+        private readonly ISelectionService _selectionService = new SelectionService();
         private bool _suppressTreeViewEvent;
         public MainWindow()
         {
@@ -94,34 +97,113 @@ namespace IFC_Viewer_00.Views
                     var vmType = Type.GetType("IFC_Viewer_00.ViewModels.MainViewModel, IFC_Viewer_00");
                     if (vmType != null)
                     {
-                        // 優先使用 (IViewer3DService) 建構子
-                        var ctor = vmType.GetConstructor(new[] { typeof(IViewer3DService) });
-                        vm = ctor != null ? ctor.Invoke(new object?[] { _viewerService }) : Activator.CreateInstance(vmType);
+                        // 優先使用 (IViewer3DService, ISelectionService) 建構子
+                        var ctor2 = vmType.GetConstructor(new[] { typeof(IViewer3DService), typeof(ISelectionService) });
+                        if (ctor2 != null)
+                            vm = ctor2.Invoke(new object?[] { _viewerService, _selectionService });
+                        else
+                        {
+                            var ctor = vmType.GetConstructor(new[] { typeof(IViewer3DService) });
+                            vm = ctor != null ? ctor.Invoke(new object?[] { _viewerService }) : Activator.CreateInstance(vmType);
+                        }
                     }
                 }
                 catch { }
                 DataContext = vm;
+                // 同步 SelectionService → TreeView 勾選
+                _selectionService.SelectionChanged += (s, e) =>
+                {
+                    try
+                    {
+                        if (DataContext is IFC_Viewer_00.ViewModels.MainViewModel mvm && mvm.Hierarchy != null)
+                        {
+                            var set = _selectionService.Selected.ToHashSet();
+                            void Walk(System.Collections.ObjectModel.ObservableCollection<IFC_Viewer_00.Models.SpatialNode> nodes)
+                            {
+                                foreach (var n in nodes)
+                                {
+                                    var id = (n.Entity as Xbim.Common.IPersistEntity)?.EntityLabel ?? 0;
+                                    n.IsChecked = id != 0 && set.Contains(id);
+                                    if (n.Children != null && n.Children.Count > 0) Walk(n.Children);
+                                }
+                            }
+                            Walk(mvm.Hierarchy);
+                        }
+                    }
+                    catch { }
+                };
                 // 監聽 SelectedNode 變更，將 TreeView 的 UI 選取同步
                 if (DataContext is INotifyPropertyChanged inpc)
                 {
                     inpc.PropertyChanged += ViewModel_PropertyChanged;
                 }
+                // 任務 2：TreeView Shift/Ctrl 多選事件（PreviewMouseLeftButtonDown）
+                if (this.FindName("TreeViewNav") is TreeView tv)
+                {
+                    tv.PreviewMouseLeftButtonDown += TreeView_PreviewMouseLeftButtonDown;
+                }
                 // 嘗試掛載事件（UIElement）
                 var uiElem = (host?.Content) as System.Windows.UIElement;
                 if (uiElem != null)
                 {
-                    // 僅在點擊時才選取，避免 hover 自動選取
-                    uiElem.MouseLeftButtonDown += (s, e) =>
+                    // 僅在點擊時才選取，避免 hover 自動選取（使用 Preview 以避免控制項提前將事件標記為已處理）
+                    uiElem.PreviewMouseLeftButtonDown += (s, e) =>
                     {
-                        // 單擊：以 HitTest 設定 HighlightedEntity；雙擊在下方處理 ZoomSelected
-                        TryPickUnderMouseAndSetSelection(uiElem, e.GetPosition(uiElem));
-                        if (e.ClickCount == 2)
+                        try { System.Diagnostics.Trace.WriteLine($"[View] 3D View selection changed. Source: User Action."); } catch { }
+                        try { System.Diagnostics.Trace.WriteLine("[MainWindow] PreviewMouseLeftButtonDown on viewer."); } catch { }
+                        try { uiElem.Focus(); } catch { }
+                        // 單擊：以 HitTest 設定選取；雙擊改由 MouseDoubleClick 事件處理
+                        var pos = e.GetPosition(uiElem);
+                        var entity = _viewerService.HitTest(pos.X, pos.Y);
+                        bool ctrl = (System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Control) == System.Windows.Input.ModifierKeys.Control;
+
+                        if (entity != null)
                         {
-                            Viewer3D_MouseDoubleClick(s, e);
+                            if (ctrl)
+                            {
+                                // Ctrl 切換多選（保留既有行為，不清空）
+                                var lbl = TryGetEntityLabel(entity);
+                                if (lbl.HasValue)
+                                {
+                                    if (_selectionService.Selected.Contains(lbl.Value))
+                                        _selectionService.Remove(lbl.Value, SelectionOrigin.Viewer3D);
+                                    else
+                                        _selectionService.Add(lbl.Value, SelectionOrigin.Viewer3D);
+                                }
+                            }
+                            else
+                            {
+                                // 單選切換：先清空，再設定新單選，確保替換舊選區
+                                try { _selectionService.SetSelection(Array.Empty<int>(), SelectionOrigin.Viewer3D); } catch { }
+                                var lbl = TryGetEntityLabel(entity);
+                                if (lbl.HasValue)
+                                {
+                                    _selectionService.SetSelection(new[] { lbl.Value }, SelectionOrigin.Viewer3D);
+                                }
+                                else
+                                {
+                                    // 沒有 label 時，仍視為清空並僅做視覺高亮
+                                    if (DataContext is IFC_Viewer_00.ViewModels.MainViewModel mvm)
+                                        mvm.HighlightedEntity = entity;
+                                    else if (DataContext != null)
+                                        try { ((dynamic)DataContext).HighlightedEntity = entity; } catch { }
+                                }
+                            }
+                        }
+                        else
+                        {
+                            // 點擊空白：清空選區
+                            try { _selectionService.SetSelection(Array.Empty<int>(), SelectionOrigin.Viewer3D); } catch { }
                         }
                     };
-                    uiElem.MouseRightButtonDown += (s, e) =>
+                    // 顯式訂閱雙擊，只處理縮放（僅限 Control 類型提供 MouseDoubleClick）
+                    if (host?.Content is System.Windows.Controls.Control ctrlDbl)
                     {
+                        ctrlDbl.MouseDoubleClick += Viewer3D_MouseDoubleClick;
+                    }
+                    uiElem.PreviewMouseRightButtonDown += (s, e) =>
+                    {
+                        try { System.Diagnostics.Trace.WriteLine("[MainWindow] PreviewMouseRightButtonDown on viewer."); } catch { }
                         // 右鍵彈出選單前，先以 HitTest 設定 HighlightedEntity，讓命令有目標
                         TryPickUnderMouseAndSetSelection(uiElem, e.GetPosition(uiElem));
                     };
@@ -210,7 +292,7 @@ namespace IFC_Viewer_00.Views
 
                 // 建立 VM 與載入資料
                 var service = new SchematicService();
-                var svm = new SchematicViewModel(service);
+                var svm = new SchematicViewModel(service, _selectionService);
                 await svm.LoadAsync(iModel);
 
                 // 顯示視窗
@@ -408,40 +490,16 @@ namespace IFC_Viewer_00.Views
 
         private void Viewer3D_MouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
         {
-            if (DataContext != null && this.FindName("ViewerHost") is ContentControl host && host.Content is System.Windows.UIElement viewer)
+            // 雙擊只負責縮放，不再做選取/同步
+            var host = this.FindName("ViewerHost") as ContentControl;
+            var target = host?.Content;
+            if (target == null) return;
+            Dispatcher.BeginInvoke(new Action(() =>
             {
-                // 直接使用目前的 HighlightedEntity 或控制項 SelectedEntity 做為選取
-                object? selectedEntity = null;
-                try { selectedEntity = ((dynamic)DataContext).HighlightedEntity; } catch { }
-                if (selectedEntity == null)
-                {
-                    // 若 VM 無選取，先嘗試從控制項抓 SelectedEntity
-                    try
-                    {
-                        var pi = host.Content.GetType().GetProperty("SelectedEntity");
-                        selectedEntity = pi?.GetValue(host.Content);
-                    }
-                    catch { }
-                }
-                if (selectedEntity == null)
-                {
-                    // 再後援：以當下滑鼠位置 HitTest 一次
-                    var p = e.GetPosition(viewer);
-                    selectedEntity = _viewerService.HitTest(p.X, p.Y);
-                    try { ((dynamic)DataContext).HighlightedEntity = selectedEntity; } catch { }
-                }
-                if (selectedEntity == null) return;
-                // 同步屬性與樹狀；確保 3D 的 SelectedEntity 也設好
-                try { ((dynamic)DataContext).UpdateSelectedElementProperties(selectedEntity); } catch { }
-                try { ((dynamic)DataContext).SyncTreeViewSelection(selectedEntity); } catch { }
-                try { _viewerService.HighlightEntity((Xbim.Ifc4.Interfaces.IIfcObject)selectedEntity, true); } catch { }
-                // 排程到下一個 UI 迴圈再 ZoomSelected，避免 Highlight 幾何尚未建立
-                Dispatcher.BeginInvoke(new Action(() =>
-                {
-                    TryZoomSelectedOrHome(host.Content);
-                    UpdateDiagnostics(host.Content);
-                }), DispatcherPriority.Background);
-            }
+                TryZoomSelectedOrHome(target);
+                UpdateDiagnostics(target);
+            }), DispatcherPriority.Background);
+            System.Diagnostics.Trace.WriteLine("[View] DoubleClick Zoom executed.");
         }
 
         private void TryPickUnderMouseAndSetSelection(System.Windows.UIElement viewer, System.Windows.Point position)
@@ -460,6 +518,27 @@ namespace IFC_Viewer_00.Views
             catch { }
         }
 
+        private static int? TryGetEntityLabel(Xbim.Ifc4.Interfaces.IIfcObject obj)
+        {
+            try
+            {
+                if (obj is Xbim.Common.IPersistEntity pe)
+                    return pe.EntityLabel;
+            }
+            catch { }
+            try
+            {
+                var pi = obj.GetType().GetProperty("EntityLabel");
+                if (pi != null)
+                {
+                    var v = pi.GetValue(obj);
+                    if (v is int i) return i;
+                }
+            }
+            catch { }
+            return null;
+        }
+
         private static void TryZoomSelectedOrHome(object control)
         {
             try
@@ -476,7 +555,7 @@ namespace IFC_Viewer_00.Views
             TryViewHome(control);
         }
 
-        private void Strong_SelectedEntityChanged(object sender, SelectionChangedEventArgs e)
+        private void Strong_SelectedEntityChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
         {
             try
             {
@@ -487,9 +566,11 @@ namespace IFC_Viewer_00.Views
                 if (val is Xbim.Ifc4.Interfaces.IIfcObject obj)
                 {
                     // 同步 VM 的高亮與屬性、樹狀
-                    try { ((dynamic)DataContext).HighlightedEntity = obj; } catch { }
-                    try { ((dynamic)DataContext).UpdateSelectedElementProperties(obj); } catch { }
-                    try { ((dynamic)DataContext).SyncTreeViewSelection(obj); } catch { }
+                    try { ((dynamic)DataContext)!.HighlightedEntity = obj; } catch { }
+                    try { ((dynamic)DataContext)!.UpdateSelectedElementProperties(obj); } catch { }
+                    try { ((dynamic)DataContext)!.SyncTreeViewSelection(obj); } catch { }
+                    var lbl = TryGetEntityLabel(obj);
+                    if (lbl.HasValue) _selectionService.SetSelection(new[] { lbl.Value }, SelectionOrigin.Viewer3D);
                 }
             }
             catch { }
@@ -521,6 +602,7 @@ namespace IFC_Viewer_00.Views
         // TreeView 選取同步（SelectedItemChanged 事件橋接）
         private void TreeView_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
         {
+            try { System.Diagnostics.Trace.WriteLine($"[View] TreeView selection changed. Source: User Action."); } catch { }
             if (_suppressTreeViewEvent) return;
             if (DataContext != null)
             {
@@ -537,6 +619,137 @@ namespace IFC_Viewer_00.Views
                 }
                 catch { }
             }
+        }
+
+        private void TreeCheckBox_Checked(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (sender is System.Windows.Controls.CheckBox cb && cb.DataContext is IFC_Viewer_00.Models.SpatialNode node)
+                {
+                    var id = (node.Entity as Xbim.Common.IPersistEntity)?.EntityLabel ?? 0;
+                    if (id != 0) _selectionService.Add(id, SelectionOrigin.TreeView);
+                }
+            }
+            catch { }
+        }
+
+        private void TreeCheckBox_Unchecked(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (sender is System.Windows.Controls.CheckBox cb && cb.DataContext is IFC_Viewer_00.Models.SpatialNode node)
+                {
+                    var id = (node.Entity as Xbim.Common.IPersistEntity)?.EntityLabel ?? 0;
+                    if (id != 0) _selectionService.Remove(id, SelectionOrigin.TreeView);
+                }
+            }
+            catch { }
+        }
+
+        // 任務 2：Shift/Ctrl 多選
+        private IFC_Viewer_00.Models.SpatialNode? _lastSelectedNode;
+        private void TreeView_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            try
+            {
+                try { System.Diagnostics.Trace.WriteLine($"[View] TreeView selection changed. Source: User Action."); } catch { }
+                var tree = sender as TreeView;
+                if (tree == null || DataContext == null) return;
+
+                // 命中測試：找出被點擊的 TreeViewItem 與其 DataContext（SpatialNode）
+                var orig = e.OriginalSource as DependencyObject;
+                // 若點在 Expander（ToggleButton）或 CheckBox 上，讓 WPF 預設行為（展開/勾選）處理，不覆寫
+                if (FindAncestor<System.Windows.Controls.Primitives.ToggleButton>(orig) != null)
+                {
+                    return; // 不要攔截，確保展開/收合正常
+                }
+                if (FindAncestor<CheckBox>(orig) != null)
+                {
+                    return; // 不要攔截，讓勾選事件照常處理
+                }
+                var tvi = FindAncestor<TreeViewItem>(orig);
+                if (tvi == null)
+                {
+                    // 點在空白處：清空選取（優先以命令執行）
+                    try
+                    {
+                        var cmd = (System.Windows.Input.ICommand?)((dynamic)DataContext).ClearSelectionCommand;
+                        if (cmd != null && cmd.CanExecute(null)) cmd.Execute(null);
+                        else ((dynamic)DataContext).ClearSelection();
+                    }
+                    catch { }
+                    e.Handled = true;
+                    return;
+                }
+                var node = tvi.DataContext as IFC_Viewer_00.Models.SpatialNode;
+                if (node == null) return;
+
+                bool shift = Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift);
+                bool ctrl = Keyboard.IsKeyDown(Key.LeftCtrl) || Keyboard.IsKeyDown(Key.RightCtrl);
+
+                // 取得 VM 與完整扁平化列表（前序遍歷）
+                var vm = DataContext as dynamic;
+                ObservableCollection<IFC_Viewer_00.Models.SpatialNode>? root = null;
+                try { root = (ObservableCollection<IFC_Viewer_00.Models.SpatialNode>?)vm?.Hierarchy; } catch { }
+                if (root == null) return;
+                var flat = new System.Collections.Generic.List<IFC_Viewer_00.Models.SpatialNode>();
+                void Walk(System.Collections.ObjectModel.ObservableCollection<IFC_Viewer_00.Models.SpatialNode> nodes)
+                {
+                    foreach (var n in nodes)
+                    {
+                        flat.Add(n);
+                        if (n.Children != null && n.Children.Count > 0) Walk(n.Children);
+                    }
+                }
+                Walk(root);
+
+                if (shift && _lastSelectedNode != null)
+                {
+                    // Shift：範圍選取（前序扁平化索引間的所有節點）
+                    int i0 = flat.IndexOf(_lastSelectedNode);
+                    int i1 = flat.IndexOf(node);
+                    if (i0 >= 0 && i1 >= 0)
+                    {
+                        if (i0 > i1) { var tmp = i0; i0 = i1; i1 = tmp; }
+                        for (int i = i0; i <= i1; i++) flat[i].IsSelected = true;
+                    }
+                }
+                else if (ctrl)
+                {
+                    // Ctrl：切換目前節點
+                    node.IsSelected = !node.IsSelected;
+                    _lastSelectedNode = node.IsSelected ? node : _lastSelectedNode;
+                }
+                else
+                {
+                    // 單選：若原本就只有此節點選中，則不做全樹清空（避免大量變更）
+                    bool alreadyOnlyThis = flat.Count(n => n.IsSelected) == 1 && node.IsSelected;
+                    if (!alreadyOnlyThis)
+                    {
+                        foreach (var n in flat)
+                        {
+                            if (!ReferenceEquals(n, node) && n.IsSelected) n.IsSelected = false;
+                        }
+                    }
+                    node.IsSelected = true;
+                    _lastSelectedNode = node;
+                }
+
+                // 阻止 TreeView 預設選取行為，避免與自定邏輯衝突
+                e.Handled = true;
+            }
+            catch { }
+        }
+
+        private static T? FindAncestor<T>(DependencyObject? current) where T : DependencyObject
+        {
+            while (current != null)
+            {
+                if (current is T ok) return ok;
+                current = VisualTreeHelper.GetParent(current);
+            }
+            return null;
         }
     }
 }

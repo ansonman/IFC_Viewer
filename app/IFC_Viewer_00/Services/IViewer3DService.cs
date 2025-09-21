@@ -14,10 +14,16 @@ namespace IFC_Viewer_00.Services
         void SetModel(IfcStore? model);
         void ResetCamera();
 
-        // 實體維持使用 IIfcObject（UI 層主要與 Ifc 介面互動）
-        void HighlightEntity(IIfcObject? entity, bool clearPrevious = true);
+        // 多筆版本（盡力而為：若控制項僅支援單選，至少會高亮最後一個）
+        void HighlightEntities(IEnumerable<int> entityLabels, bool clearPrevious = true);
+        // 依據 IXbimEntity（IPersistEntity/IIfcObject 皆可）直接高亮多筆
+        void HighlightEntities(IEnumerable<IPersistEntity> entitiesToHighlight);
         void Isolate(IIfcObject? entity);
+        void Isolate(IEnumerable<int> entityLabels);
         void Hide(IIfcObject? entity, bool recursive = true);
+        void Hide(IEnumerable<int> entityLabels, bool recursive = true);
+        // 任務 1：以完整隱藏清單覆寫控制項 HiddenInstances 並刷新
+        void UpdateHiddenList(IEnumerable<IPersistEntity> hiddenEntities);
         void ShowAll();
 
         IIfcObject? HitTest(double x, double y);

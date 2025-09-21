@@ -19,28 +19,55 @@ namespace IFC_Viewer_00.ViewModels
 
         public double Scale { get; set; } = 0.001; // 粗略縮放，將毫米→公尺（視模型而定）
 
-        // 點擊互動：由 Window/Owner 註冊，轉送到 3D 服務
+    // 點擊互動：由 Window/Owner 註冊，轉送到 3D 服務
         public event Action<IPersistEntity, bool>? RequestHighlight; // bool: 是否要求縮放
+    private readonly ISelectionService? _selection;
 
         public ICommand NodeClickCommand { get; }
         public ICommand EdgeClickCommand { get; }
 
-        public SchematicViewModel(SchematicService service)
+        public SchematicViewModel(SchematicService service, ISelectionService? selection = null)
         {
             _service = service;
+            _selection = selection;
             NodeClickCommand = new SchematicCommand(obj =>
             {
                 if (obj is SchematicNodeView nv && nv.Node?.Entity != null)
                 {
-                    RequestHighlight?.Invoke(nv.Node.Entity, true);
+                    var ctrl = (System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Control) == System.Windows.Input.ModifierKeys.Control;
+                    var lbl = (nv.Node.Entity as IPersistEntity)?.EntityLabel ?? 0;
+                    if (_selection != null && lbl != 0)
+                    {
+                        if (ctrl)
+                        {
+                            if (_selection.Selected.Contains(lbl)) _selection.Remove(lbl, SelectionOrigin.Schematic);
+                            else _selection.Add(lbl, SelectionOrigin.Schematic);
+                        }
+                        else
+                        {
+                            _selection.SetSelection(new[] { lbl }, SelectionOrigin.Schematic);
+                        }
+                    }
+                    RequestHighlight?.Invoke(nv.Node.Entity, !ctrl);
                 }
             });
             EdgeClickCommand = new SchematicCommand(obj =>
             {
                 if (obj is SchematicEdgeView ev && ev.Start?.Node?.Entity != null)
                 {
-                    // 以起點代表整條邊進行 3D 同步
-                    RequestHighlight?.Invoke(ev.Start.Node.Entity, true);
+                    // 以兩端節點加入選取集合
+                    var ctrl = (System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Control) == System.Windows.Input.ModifierKeys.Control;
+                    var ids = new List<int>();
+                    var sId = (ev.Start.Node.Entity as IPersistEntity)?.EntityLabel ?? 0;
+                    var tId = (ev.End?.Node?.Entity as IPersistEntity)?.EntityLabel ?? 0;
+                    if (sId != 0) ids.Add(sId);
+                    if (tId != 0) ids.Add(tId);
+                    if (_selection != null && ids.Count > 0)
+                    {
+                        if (ctrl) _selection.AddRange(ids, SelectionOrigin.Schematic);
+                        else _selection.SetSelection(ids, SelectionOrigin.Schematic);
+                    }
+                    RequestHighlight?.Invoke(ev.Start.Node.Entity, !ctrl);
                 }
             });
         }
@@ -116,6 +143,7 @@ namespace IFC_Viewer_00.ViewModels
         public double X { get; set; }
         public double Y { get; set; }
         public Brush NodeBrush { get; set; } = Brushes.SteelBlue;
+        public bool IsSelected { get; set; }
     }
 
     public class SchematicEdgeView
@@ -124,6 +152,7 @@ namespace IFC_Viewer_00.ViewModels
         public SchematicNodeView Start { get; set; } = null!;
         public SchematicNodeView End { get; set; } = null!;
         public Brush EdgeBrush { get; set; } = Brushes.DarkSlateGray;
+        public bool IsSelected { get; set; }
     }
 
     // 輕量 ICommand 實作

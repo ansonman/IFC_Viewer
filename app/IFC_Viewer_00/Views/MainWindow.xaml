@@ -3,7 +3,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-    
+    xmlns:views="clr-namespace:IFC_Viewer_00.Views"
     xmlns:local="clr-namespace:IFC_Viewer_00.Models"
     mc:Ignorable="d"
     Title="IFC Viewer" Height="800" Width="1200"
@@ -51,10 +51,30 @@
             <TreeView x:Name="TreeViewNav" Grid.Column="0"
                       ItemsSource="{Binding Hierarchy}"
                       SelectedItemChanged="TreeView_SelectedItemChanged"
-                      Margin="5">
+                      Margin="5"
+                      VirtualizingStackPanel.IsVirtualizing="True"
+                      VirtualizingStackPanel.VirtualizationMode="Recycling"
+                      ScrollViewer.CanContentScroll="True">
                 <TreeView.Resources>
                     <HierarchicalDataTemplate DataType="{x:Type local:SpatialNode}" ItemsSource="{Binding Children}">
-                        <TextBlock Text="{Binding Name}" />
+                        <Border x:Name="RowBorder" CornerRadius="2" Padding="2" Margin="0,1">
+                            <StackPanel x:Name="RowPanel" Orientation="Horizontal">
+                                <!-- 任務 1：可見性切換（雙向綁定 IsVisible） -->
+                                <CheckBox IsChecked="{Binding IsVisible, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                          Margin="0,0,6,0"/>
+                                <!-- 節點名稱 -->
+                                <TextBlock x:Name="NameText" Text="{Binding Name}" />
+                            </StackPanel>
+                        </Border>
+                        <HierarchicalDataTemplate.Triggers>
+                            <!-- 多選視覺：當資料項 IsSelected=true 時，套用背景/邊框與字重 -->
+                            <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                <Setter TargetName="RowBorder" Property="Background" Value="#FFE6F2FF"/>
+                                <Setter TargetName="RowBorder" Property="BorderBrush" Value="#FF7CB6FF"/>
+                                <Setter TargetName="RowBorder" Property="BorderThickness" Value="1"/>
+                                <Setter TargetName="NameText" Property="FontWeight" Value="Bold"/>
+                            </DataTrigger>
+                        </HierarchicalDataTemplate.Triggers>
                     </HierarchicalDataTemplate>
                 </TreeView.Resources>
                 <TreeView.ItemContainerStyle>

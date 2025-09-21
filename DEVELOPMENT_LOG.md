@@ -1,5 +1,32 @@
 # DEVELOPMENT LOG
 
+## 2025-09-21 修復：TreeView → 3D 高亮回歸與多選相容性
+
+- 修復重點：
+  - `Services/StrongWindowsUiViewer3DService.cs` 新增對 `Selection: EntitySelection`（非純集合）的專用處理，嘗試以其內部屬性/方法填入多選；
+  - 若控制版本不支援多選，退回 `SelectedEntity` 單選，確保至少單選可視；
+  - 清空選取時兼顧清除 Selection 與 `SelectedEntity = null`，並以 InvalidateVisual + UpdateLayout 刷新；
+  - 增補診斷日誌，包含 `[Service] HighlightEntities(labels) ...`、`[StrongViewer] Using member for selection: ...`、`Fallback SelectedEntity assigned ...`。
+- 驗證建議：
+  1) TreeView 單選一個元素 → 3D 應高亮；
+  2) TreeView Ctrl 多選多個元素 → 3D 盡可能多選；若控制版本不支援則至少第一個可見；
+  3) TreeView 點空白 → 3D 高亮清空。
+- Build：PASS（仍有 NU1701 相容性警告，來源於 HelixToolkit.Wpf 與 Xbim.* 封裝對 net8.0-windows 的還原）。
+
+## 2025-09-21 文件同步與多選功能彙整
+
+- 文件更新：README、FILE_ORG、SchematicModule_Report、Debug Report 完成同步，涵蓋：
+  - TreeView Ctrl/Shift 多選與可見性勾選
+  - 3D 多元素高亮（集合 API）與 Hidden 清單更新
+  - Schematic 缺 Ports 時的幾何鄰近 fallback（< 10mm）與 IsInferred 標註
+  - 新增多選高亮相容性修正：控制項集合若需要 `IPersistEntity`，會將 Label 映射為實體加入集合；否則以 Label 直接加入；設定後輕量刷新視圖。
+- 待辦（程式碼面）：
+  - 將所有「單一高亮」呼叫改為集合高亮 API，保持一致介面（若尚未全面移除）
+  - 將階層建置改為 async，避免 UI 卡頓
+
+品質狀態：
+- Build：pass（上次編譯成功，仍有 NU1701 警告）
+
 ## 2025-09-20 互動測試結果與 Schematic 修正
 
 本日完成一輪互動測試，重點結果如下：

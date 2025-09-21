@@ -1,140 +1,78 @@
-# IFC Viewer 除錯報告
+```markdown
+# IFC Viewer 除錯報告（同步 2025-09-21）
 
-> 目的：快速對齊目前狀態、重現步驟、蒐集必要日誌，並驗證「右鍵 Isolate/Hide/ShowAll 能正確影響 3D 視圖」的修正。
+> 目的：快速對齊狀態、重現步驟、收集必要日誌；新增多選/可見性測試清單與 Schematic fallback 說明。
 
 ---
 
 ## 摘要（TL;DR）
-- 問題：先前右鍵選單（Isolate/Hide/ShowAll）執行後「沒有任何 3D 視覺變化」。
-- 根因（已修正）：WPF ContextMenu 不在視覺樹內，命令 Binding 未能綁到視窗 DataContext；已改用 `PlacementTarget.DataContext`。
-- 目前狀態：
-  - 應用可建置與執行；SetModel 與 ViewHome 已記錄在 viewer3d.log。
-  - 正在等待使用者於 3D 視圖實際右鍵執行 Isolate/Hide/ShowAll 後提供最新日誌，以確認視覺與日誌均正確。
+- 右鍵 Isolate/Hide/ShowAll 綁定已修正（PlacementTarget.DataContext）；3D 可見度應有變化並有 log 記錄。
+- 已加入 TreeView 多選（Ctrl/Shift）與可見性勾選；多選時 3D 採集合高亮；可見性會更新 Hidden 清單。
+- Schematic 在缺 Ports 時使用幾何鄰近 fallback（< 10mm），推斷邊以 IsInferred 標註。
+ - 多選高亮相容性已加強：若控制項集合要求 `IPersistEntity`，會把 Label 轉換為實體加入集合，並做輕量更新（InvalidateVisual + UpdateLayout），確保即時可見。
 
 ---
 
-## 範圍與目標
-- 目標：
-  1) 右鍵 Isolate/Hide/ShowAll 會對 3D 視圖產生可見影響。
-  2) 點選 3D 時可同步至屬性與樹狀（已完成屬性，同步樹狀已實作）。
-  3) 每次可見度變更都在 viewer3d.log 有清楚 Trace（進入方法、集合 count 前後、呼叫 ReloadModel/相機）。
+## 測試清單（建議逐項勾選）
+
+### A. 3D 右鍵基本行為
+- [ ] Isolate 後只剩目標可見，並自動 ZoomSelected
+- [ ] Hide 後目標消失（可連續多次）
+- [ ] ShowAll 後全顯並 ViewHome
+- [ ] viewer3d.log 有 Isolate/Hide/ShowAll 進入點與集合 count 前後差異
+
+### B. TreeView 多選與 3D 高亮
+- [ ] 單擊單選會清空舊選取；3D 僅高亮單一元素
+- [ ] Ctrl+點擊可切換單一節點選取狀態；3D 會高亮所有已選節點
+- [ ] Shift+點擊可範圍選取（基於上次 Anchor）；3D 會高亮整段
+- [ ] 取消所有選取時，3D 取消高亮（或僅保留最後一次）
+ - [ ] 若未見多選高亮：檢查 `SelectedEntities`/`HighlightedEntities` 集合型別（`List<int>` 或 `List<IPersistEntity>`）與實際加入元素是否一致。
+
+### C. 可見性切換與 Hidden 清單
+- [ ] 勾選/取消節點 IsVisible 時，子節點會遞迴跟隨
+- [ ] 取消可見的節點，3D Hidden 清單更新，該部分在 3D 隱藏
+- [ ] 再次勾選後，Hidden 清單移除對應，3D 回復顯示
+
+### D. Schematic Fallback（若已接上 UI）
+- [ ] 缺 Ports 的模型資料下，仍能看到節點間的推斷邊
+- [ ] 推斷邊具備 IsInferred 標記（UI 或報表可觀察）
+- [ ] 點擊節點/邊可觸發 3D 高亮（集合高亮 API），ZoomSelected 生效
 
 ---
 
-## 環境與版本
-- OS：Windows（PowerShell v5.1）
-- .NET：.NET 8（目標 net8.0-windows）
-- WPF + MVVM
-- 3D 控制：xBIM DrawingControl3D（HelixToolkit.Wpf 基底）
-- 主要套件（版本請補）：
-  - Xbim.Essentials / Xbim.Ifc
-  - Xbim.Presentation（DrawingControl3D）
-  - Xbim.ModelGeometry.Scene（Xbim3DModelContext）
-  - Xbim.Geometry.Engine.Interop
-  - HelixToolkit.Wpf
+## 日誌與輸出位置
+- viewer3d.log（預設）：app/IFC_Viewer_00/bin/Debug/net8.0-windows/viewer3d.log
+- 內容關鍵：
+  - [StrongViewer] Isolate/Hide/ShowAll 進入點
+  - 隔離/隱藏集合 count 前後
+  - ReloadModel(...) 與相機呼叫（ZoomSelected / ViewHome）
+  - HighlightEntities：是否找到 `SelectedEntities`/`HighlightedEntities`、集合型別、加入數量，以及是否有 InvalidateVisual/UpdateLayout。
 
 ---
 
-## 目前行為 vs 預期行為
-- 預期：
-  - Isolate：只顯示被隔離的實體（置換隔離集合；清空隱藏），並 ZoomSelected。
-  - Hide：將該實體加入隱藏集合；其他內容保持。
-  - ShowAll：清除隔離與隱藏；重載模型並 ViewHome。
-- 目前（待驗證）：
-  - 綁定已修正；需要實際右鍵操作一次，確認 3D 的可見度變化與相機動作確實發生，並在日誌中出現對應 Trace。
+## 重現步驟（最小）
+1) 設定環境變數 IFC_STARTUP_FILE 指向範例 IFC；啟動 App。
+2) 3D 左鍵選一個元件 → 右鍵 Isolate → 應只顯示該元件並 Zoom。
+3) 右鍵 ShowAll → 應全顯並回 Home。
+4) TreeView 依序測 Ctrl/Shift 多選；觀察 3D 是否集合高亮。
+5) 勾/取消節點 IsVisible；觀察 3D Hidden 更新。
 
 ---
 
-## 最小重現步驟
-1) 啟動應用（以環境變數 `IFC_STARTUP_FILE` 指向 IFC 檔，例如 `Project1.ifc`）。
-2) 模型載入後，在 3D 視圖中：
-   - 左鍵點選一個構件（右側屬性表應更新；樹狀亦應同步到該節點）。
-   - 在 3D 空間右鍵 → 選單：
-     - 先按「Isolate」，預期只剩該構件顯示，並自動 ZoomSelected。
-     - 再對另一構件右鍵「Hide」，預期該構件從場景消失。
-     - 最後按「Show All」，預期回到全顯，並 ViewHome。
+## 已知相容性差異
+- 集合命名：IsolateInstances/IsolatedInstances、HiddenInstances/HiddenEntities
+- ReloadModel 的 enum（ModelRefreshOptions）可能為巢狀型別；已以反射與多層 Refresh Fallback 處理
 
 ---
 
-## 近期關鍵更動（可能影響行為）
-- `Services/StrongWindowsUiViewer3DService.cs`
-  - 新增/強化：SetModel、Highlight、Isolate、Hide、ShowAll、RefreshAfterFilterChange、HitTest、強韌的 ReloadModel options/fallback、詳細 Trace。
-- `Views/MainWindow.xaml`
-  - 修正 ContextMenu 綁定：改用 `PlacementTarget.DataContext` 以正確觸發 ViewModel 命令。
-- `ViewModels/MainViewModel.cs`
-  - 命令委派到 IViewer3DService；維護 HighlightedEntity；同步樹狀與屬性。
-- `App.xaml.cs`
-  - 初始化 Trace listener，輸出到 `viewer3d.log`。
+## 後續追蹤
+- 若 3D 沒反應，請附上 viewer3d.log 關鍵段落與 VS/VS Code 偵錯輸出
+- 需要時會：
+  - 加入以 Label 為主的 Hide/Isolate Fallback
+  - 擴充特定版本的刷新路徑
+  - 強化選取同步與錯誤處理
 
 ---
 
-## 日誌蒐集指引（請依序執行）
-- 檔案 1：viewer3d.log
-  - 位置（預設）：`app/IFC_Viewer_00/bin/Debug/net8.0-windows/viewer3d.log`
-  - 期望新增的片段（請擷取貼上）：
-    - `[StrongViewer] Isolate` / `Hide` / `ShowAll` 進入點
-    - 變更前/後集合計數（Isolated/Hidden）
-    - `ReloadModel(...)` 與相機呼叫（`ZoomSelected`、`ViewHome`）
-- 檔案 2：Visual Studio（或 VS Code）偵錯輸出
-  - 執行相同步驟後，將輸出視窗中相關 Trace 貼上（同樣會包含 `[StrongViewer] ...`）。
-- 操作步驟（蒐集時）：
-  1) 啟動應用 → 模型載入完成。
-  2) 3D 右鍵依序執行：Isolate → Hide → ShowAll。
-  3) 關閉應用後，開啟 `viewer3d.log`，擷取上述關鍵區段。
-
----
-
-## 觀察與初步結論（模板）
-- 執行 Isolate 後，3D：
-  - [ ] 有明顯只顯示被選構件
-  - [ ] 有自動 ZoomSelected
-  - 日誌：
-    - [ ] 出現 `Isolate` 進入點與集合 count 變化
-- 執行 Hide 後，3D：
-  - [ ] 構件消失
-  - 日誌：
-    - [ ] 出現 `Hide` 進入點與 Hidden 集合 count 增加
-- 執行 ShowAll 後，3D：
-  - [ ] 視圖全顯並回 Home 視角
-  - 日誌：
-    - [ ] 出現 `ShowAll` 與 `ViewHome`
-
----
-
-## 驗證清單（逐項勾選）
-- [ ] ContextMenu 命令在 3D 視圖上可觸發（可在日誌看到對應方法進入點）
-- [ ] Isolate 置換隔離集合並清空隱藏集合
-- [ ] Hide 加入隱藏集合（不影響既有隔離）
-- [ ] ShowAll 清空隔離與隱藏；重載與 ViewHome 成功
-- [ ] ReloadModel 使用「保留相機/選取」選項（若版本支援）或 fallback 路徑
-- [ ] 相機行為：Isolate 後 ZoomSelected；ShowAll 後 ViewHome
-- [ ] 3D 點選 → 右側屬性表更新；樹狀同步高亮
-
----
-
-## 已知風險 / 待確認
-- xBIM 版本差異：
-  - 隔離/隱藏集合可能是 `IsolateInstances/IsolatedInstances` 與 `HiddenInstances/HiddenEntities`，元素型別為 `IPersistEntity` 或 `int`（Label）。
-  - 已在服務中加入反射/雙制式處理，但仍需實機驗證。
-- UI 執行緒：所有 3D 狀態變更需在 UI 執行緒；服務已防護，但仍需觀察。
-
----
-
-## 附件與路徑（參考）
-- 服務實作：`app/IFC_Viewer_00/Services/StrongWindowsUiViewer3DService.cs`
-- 視圖 XAML：`app/IFC_Viewer_00/Views/MainWindow.xaml`
-- ViewModel：`app/IFC_Viewer_00/ViewModels/MainViewModel.cs`
-- 追蹤日誌：`app/IFC_Viewer_00/bin/Debug/net8.0-windows/viewer3d.log`
-
----
-
-## 下一步
-1) 請依「日誌蒐集指引」實測一次 Isolate → Hide → ShowAll，提供最新 `viewer3d.log` 與偵錯輸出片段（含 `[StrongViewer] ...`）。
-2) 我將依日誌與畫面結果，必要時：
-   - 加入更強的 fallback（例如以 Label 為主的 Hide/Isolate）
-   - 追加針對特定 xBIM 版本的刷新路徑
-   - 強化相機/選取同步邏輯與錯誤處理
-
----
-
-（備註）你可直接在此檔案下方貼上日誌截圖或片段，並勾選驗證清單的項目，以便後續收斂。
+（備註）可直接在此檔最後貼上日誌片段與勾選結果，方便對照。
+```

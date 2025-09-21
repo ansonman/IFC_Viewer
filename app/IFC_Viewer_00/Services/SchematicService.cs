@@ -61,7 +61,21 @@ namespace IFC_Viewer_00.Services
             {
                 var a = rel.RelatingPort;
                 var b = rel.RelatedPort;
-                if (a == null || b == null) continue;
+                // Null 檢查：若任一 Port 為 null，記錄警告並跳過
+                if (a == null || b == null)
+                {
+                    try
+                    {
+                        var relId = rel.GlobalId.Value as string;
+                        if (string.IsNullOrWhiteSpace(relId))
+                        {
+                            relId = (rel as IPersistEntity)?.EntityLabel.ToString() ?? "?";
+                        }
+                        System.Diagnostics.Trace.WriteLine($"[Service] WARNING: Skipping IfcRelConnectsPorts with ID {relId} due to a null port.");
+                    }
+                    catch { }
+                    continue;
+                }
 
                 if (!portToNode.TryGetValue(a, out var start)) continue;
                 if (!portToNode.TryGetValue(b, out var end)) continue;
@@ -75,12 +89,133 @@ namespace IFC_Viewer_00.Services
                     Id = string.IsNullOrWhiteSpace(gid) ? Guid.NewGuid().ToString() : gid,
                     StartNode = start,
                     EndNode = end,
-                    Entity = rel as IPersistEntity ?? start.Entity ?? end.Entity
+                    Entity = rel as IPersistEntity ?? start.Entity ?? end.Entity,
+                    IsInferred = false
                 };
                 data.Edges.Add(edge);
             }
 
+            // 5. 備援：幾何鄰近性（for 缺少 IfcRelConnectsPorts 的模型，如 Sample_pipe.ifc）
+            // 規則：對孤立節點（沒有任何邊相連），找出最近鄰節點；若距離 < 閾值（10mm = 0.01m），則推斷為相連並新增邊。
+            const double threshold = 0.01; // 10mm in metres
+
+            if (data.Nodes.Count > 1)
+            {
+                // 建立快速查找結構：依 X 座標排序，加速鄰域掃描
+                var nodesByX = data.Nodes.OrderBy(n => n.Position3D.X).ToList();
+                var indexByNode = nodesByX
+                    .Select((n, i) => (n, i))
+                    .ToDictionary(t => t.n, t => t.i);
+
+                bool NodeHasEdge(SchematicNode n)
+                {
+                    foreach (var e in data.Edges)
+                    {
+                        if (ReferenceEquals(e.StartNode, n) || ReferenceEquals(e.EndNode, n))
+                            return true;
+                    }
+                    return false;
+                }
+
+                foreach (var node in data.Nodes)
+                {
+                    if (NodeHasEdge(node))
+                        continue; // 非孤立
+
+                    if (!indexByNode.TryGetValue(node, out var idx))
+                        continue;
+
+                    var p = node.Position3D;
+                    double bestDist2 = double.MaxValue;
+                    SchematicNode? best = null;
+
+                    // 從排序結果向左右擴散搜尋，使用 X 軸差作為剪枝
+                    int left = idx - 1;
+                    int right = idx + 1;
+
+                    // 先在一個小視窗內快速搜尋（例如 +/- 16 個），避免 O(n^2)
+                    int budget = 16;
+                    while (budget > 0 && (left >= 0 || right < nodesByX.Count))
+                    {
+                        bool advanced = false;
+                        if (left >= 0)
+                        {
+                            var candidate = nodesByX[left];
+                            if (!ReferenceEquals(candidate, node))
+                            {
+                                var dx = Math.Abs(candidate.Position3D.X - p.X);
+                                if (dx <= threshold || dx * dx <= bestDist2)
+                                {
+                                    var d2 = Dist2(p, candidate.Position3D);
+                                    if (d2 < bestDist2)
+                                    {
+                                        bestDist2 = d2;
+                                        best = candidate;
+                                    }
+                                }
+                            }
+                            left--;
+                            advanced = true;
+                            budget--;
+                        }
+                        if (right < nodesByX.Count && budget > 0)
+                        {
+                            var candidate = nodesByX[right];
+                            if (!ReferenceEquals(candidate, node))
+                            {
+                                var dx = Math.Abs(candidate.Position3D.X - p.X);
+                                if (dx <= threshold || dx * dx <= bestDist2)
+                                {
+                                    var d2 = Dist2(p, candidate.Position3D);
+                                    if (d2 < bestDist2)
+                                    {
+                                        bestDist2 = d2;
+                                        best = candidate;
+                                    }
+                                }
+                            }
+                            right++;
+                            advanced = true;
+                            budget--;
+                        }
+                        if (!advanced) break;
+                    }
+
+                    if (best != null)
+                    {
+                        var bestDist = Math.Sqrt(bestDist2);
+                        if (bestDist < threshold)
+                        {
+                            // 避免重複邊：檢查是否已有 Start-End（無向）
+                            bool ExistsEdge(SchematicNode a, SchematicNode b)
+                                => data.Edges.Any(e => (ReferenceEquals(e.StartNode, a) && ReferenceEquals(e.EndNode, b))
+                                                    || (ReferenceEquals(e.StartNode, b) && ReferenceEquals(e.EndNode, a)));
+
+                            if (!ExistsEdge(node, best))
+                            {
+                                var edge = new SchematicEdge
+                                {
+                                    Id = Guid.NewGuid().ToString(),
+                                    StartNode = node,
+                                    EndNode = best,
+                                    // 無 IfcRelConnectsPorts 可對應，回退以端點任一實體做關聯（取 node.Entity 為主）
+                                    Entity = node.Entity ?? best.Entity,
+                                    IsInferred = true
+                                };
+                                data.Edges.Add(edge);
+                            }
+                        }
+                    }
+                }
+            }
+
             return Task.FromResult(data);
+        }
+
+        private static double Dist2(Point3D a, Point3D b)
+        {
+            var dx = a.X - b.X; var dy = a.Y - b.Y; var dz = a.Z - b.Z;
+            return dx * dx + dy * dy + dz * dz;
         }
 
         private static bool TryGetLabel(IIfcElement elem, out int label)

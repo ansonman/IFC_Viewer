@@ -160,6 +160,124 @@ namespace IFC_Viewer_00.Services
             }
         }
 
+        public void HighlightEntities(IEnumerable<int> entityLabels, bool clearPrevious = true)
+        {
+            if (entityLabels == null) return;
+            try
+            {
+                if (_viewer != null)
+                {
+                    // 嘗試以反射尋找集合屬性
+                    var t = _viewer.GetType();
+                    var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+                    var selProp = t.GetProperty("SelectedEntities", flags) ?? t.GetProperty("HighlightedEntities", flags);
+                    if (selProp != null && selProp.CanWrite)
+                    {
+                        object? coll = null;
+                        var pt = selProp.PropertyType;
+                        // 嘗試取得現有集合，若為 null 則建立一個
+                        try { coll = selProp.GetValue(_viewer); } catch { }
+                        if (coll == null)
+                        {
+                            try { coll = Activator.CreateInstance(pt); } catch { }
+                            // 若屬性型別是介面，嘗試以 List<IPersistEntity> 代替
+                            if (coll == null && _viewer.Model != null)
+                            {
+                                var ipeListType = typeof(List<>).MakeGenericType(typeof(IPersistEntity));
+                                if (pt.IsAssignableFrom(ipeListType)) coll = Activator.CreateInstance(ipeListType);
+                            }
+                        }
+                        if (coll != null)
+                        {
+                            // 先嘗試 Add(IPersistEntity)
+                            var addPe = coll.GetType().GetMethod("Add", flags, null, new[] { typeof(IPersistEntity) }, null);
+                            if (addPe != null && _viewer.Model != null)
+                            {
+                                // Clear 舊資料
+                                var mClear = coll.GetType().GetMethod("Clear", flags, null, Type.EmptyTypes, null);
+                                mClear?.Invoke(coll, null);
+                                foreach (var id in entityLabels.Distinct())
+                                {
+                                    try
+                                    {
+                                        var pe = _viewer.Model.Instances[id] as IPersistEntity;
+                                        if (pe != null) addPe.Invoke(coll, new object?[] { pe });
+                                    }
+                                    catch { }
+                                }
+                                selProp.SetValue(_viewer, coll);
+                                // 輕量更新
+                                try { _viewer.InvalidateVisual(); } catch { }
+                                TryInvokeStrongly(() => _viewer.UpdateLayout());
+                                return;
+                            }
+                            // 再嘗試 Add(int)
+                            var addInt = coll.GetType().GetMethod("Add", flags, null, new[] { typeof(int) }, null);
+                            if (addInt != null)
+                            {
+                                var mClear = coll.GetType().GetMethod("Clear", flags, null, Type.EmptyTypes, null);
+                                mClear?.Invoke(coll, null);
+                                foreach (var id in entityLabels.Distinct()) addInt.Invoke(coll, new object?[] { id });
+                                selProp.SetValue(_viewer, coll);
+                                try { _viewer.InvalidateVisual(); } catch { }
+                                TryInvokeStrongly(() => _viewer.UpdateLayout());
+                                return;
+                            }
+                        }
+                    }
+                    // 後援：僅設最後一個（控制項只支援單選時）
+                    var lastLabel = entityLabels.LastOrDefault();
+                    if (lastLabel != 0 && _viewer.Model != null)
+                    {
+                        var ent = _viewer.Model.Instances[lastLabel] as IIfcObject;
+                        if (ent != null) _viewer.SelectedEntity = ent;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[WindowsUiViewer3DService] HighlightEntities error: {ex.Message}");
+            }
+        }
+
+        // 高亮多筆（以實體清單）
+        public void HighlightEntities(IEnumerable<IPersistEntity> entitiesToHighlight)
+        {
+            if (entitiesToHighlight == null) return;
+            try
+            {
+                if (_viewer != null)
+                {
+                    var t = _viewer.GetType();
+                    var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+                    var selProp = t.GetProperty("SelectedEntities", flags) ?? t.GetProperty("HighlightedEntities", flags);
+                    if (selProp != null && selProp.CanWrite)
+                    {
+                        object? coll = null;
+                        var pt = selProp.PropertyType;
+                        try { coll = Activator.CreateInstance(pt); } catch { }
+                        if (coll != null)
+                        {
+                            var addPe = pt.GetMethod("Add", flags, null, new[] { typeof(IPersistEntity) }, null);
+                            if (addPe != null)
+                            {
+                                foreach (var pe in entitiesToHighlight.Distinct()) addPe.Invoke(coll, new object?[] { pe });
+                                selProp.SetValue(_viewer, coll);
+                                return;
+                            }
+                        }
+                    }
+                    // 後援：僅設最後一個
+                    var last = entitiesToHighlight.LastOrDefault();
+                    if (last is IIfcObject obj) _viewer.SelectedEntity = obj;
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[WindowsUiViewer3DService] HighlightEntities(entities) error: {ex.Message}");
+            }
+        }
+
         public void Isolate(IIfcObject? entity)
         {
             if (entity == null) return;
@@ -180,6 +298,37 @@ namespace IFC_Viewer_00.Services
             catch (Exception ex)
             {
                 Trace.WriteLine($"[WindowsUiViewer3DService] Isolate error: {ex.Message}");
+            }
+        }
+
+        public void Isolate(IEnumerable<int> entityLabels)
+        {
+            if (entityLabels == null) return;
+            try
+            {
+                if (_viewer != null)
+                {
+                    var list = new List<IPersistEntity>();
+                    if (_viewer.Model != null)
+                    {
+                        foreach (var id in entityLabels.Distinct())
+                        {
+                            var pe = _viewer.Model.Instances[id];
+                            if (pe != null) list.Add(pe);
+                        }
+                    }
+                    _viewer.IsolateInstances = list;
+                    _viewer.ReloadModel(DrawingControl3D.ModelRefreshOptions.ViewPreserveCameraPosition | DrawingControl3D.ModelRefreshOptions.ViewPreserveSelection);
+                }
+                else
+                {
+                    if (!TryInvokeReflective(_control, "Refresh"))
+                        TryInvokeReflective(_control, "ReloadModel");
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[WindowsUiViewer3DService] Isolate(list) error: {ex.Message}");
             }
         }
 
@@ -206,6 +355,36 @@ namespace IFC_Viewer_00.Services
             }
         }
 
+        public void Hide(IEnumerable<int> entityLabels, bool recursive = true)
+        {
+            if (entityLabels == null) return;
+            try
+            {
+                if (_viewer != null)
+                {
+                    _viewer.HiddenInstances ??= new List<IPersistEntity>();
+                    if (_viewer.Model != null)
+                    {
+                        foreach (var id in entityLabels.Distinct())
+                        {
+                            var pe = _viewer.Model.Instances[id];
+                            if (pe != null) _viewer.HiddenInstances.Add(pe);
+                        }
+                    }
+                    _viewer.ReloadModel(DrawingControl3D.ModelRefreshOptions.ViewPreserveCameraPosition | DrawingControl3D.ModelRefreshOptions.ViewPreserveSelection);
+                }
+                else
+                {
+                    if (!TryInvokeReflective(_control, "Refresh"))
+                        TryInvokeReflective(_control, "ReloadModel");
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[WindowsUiViewer3DService] Hide(list) error: {ex.Message}");
+            }
+        }
+
         public void ShowAll()
         {
             try
@@ -228,6 +407,29 @@ namespace IFC_Viewer_00.Services
             catch (Exception ex)
             {
                 Trace.WriteLine($"[WindowsUiViewer3DService] ShowAll error: {ex.Message}");
+            }
+        }
+
+        // 覆蓋 HiddenInstances 並刷新
+        public void UpdateHiddenList(IEnumerable<IPersistEntity> hiddenEntities)
+        {
+            try
+            {
+                if (_viewer != null)
+                {
+                    _viewer.HiddenInstances = new List<IPersistEntity>(hiddenEntities.Distinct());
+                    _viewer.ReloadModel(DrawingControl3D.ModelRefreshOptions.ViewPreserveCameraPosition | DrawingControl3D.ModelRefreshOptions.ViewPreserveSelection);
+                }
+                else
+                {
+                    // 反射最小化嘗試：只刷新
+                    if (!TryInvokeReflective(_control, "Refresh"))
+                        TryInvokeReflective(_control, "ReloadModel");
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[WindowsUiViewer3DService] UpdateHiddenList error: {ex.Message}");
             }
         }
 

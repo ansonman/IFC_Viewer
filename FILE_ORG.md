@@ -1,23 +1,61 @@
+````markdown
 # 檔案與目錄結構說明 (FILE_ORG)
+
+本文件對目前的專案目錄與主要檔案提供總覽，並標示關鍵服務/模型的用途，以利協作與維護。
 
 ## 目錄概覽
 
-- `app/IFC_Viewer_00/`
-  - `Views/`
-    - `MainWindow.xaml`：主視窗，包含 Menu、Toolbar、TreeView、3D 檢視宿主、屬性面板與狀態列。
-    - `MainWindow.xaml.cs`：UI 互動橋接（滑鼠點選/右鍵/雙擊、選取同步、狀態列診斷）。
-  - `ViewModels/`
-    - `MainViewModel.cs`：MVVM 核心邏輯（載入模型、樹狀資料、屬性資料、Isolate/Hide/ShowAll 命令）。
-  - `Services/`
-    - `StrongWindowsUiViewer3DService.cs`：以 `Xbim.Presentation.DrawingControl3D` 為核心的強型別服務；處理 SetModel、Highlight、Isolate/Hide/ShowAll、HitTest、ReloadModel/Zoom 等。
-    - `WindowsUiViewer3DService.cs`：強型別 + 反射回退（便於測試與不同版本相容）。
-    - `IfcStringHelper.cs`：將 xBIM 的多型值（如 GlobalId/Name）轉成字串顯示。
-  - `Models/`
-    - `SpatialNode.cs`：樹狀節點資料模型（Name/Entity/Children）。
-    - `ElementProperty.cs`：屬性面板的名稱/值項目。
-- `tests/IFC_Viewer_00.Tests/`：基本單元測試，驗證服務呼叫與 VM 行為。
-- `README.md`：快速開始、操作說明、疑難排解。
-- `DEVELOPMENT_LOG.md`：開發紀錄（功能修正、技術決策、建置與測試狀態）。
+- app/IFC_Viewer_00/
+  - Views/
+    - MainWindow.xaml：主視窗（Menu/主內容/狀態列）。目前 3D 控制項以 XAML 直接宣告（可後續改為 ContentControl 動態載入）。
+    - MainWindow.xaml.cs：設定 DataContext、接住後續 3D/TreeView 事件（如需要）。
+  - ViewModels/
+    - MainViewModel.cs：核心 VM，提供 Model 載入（OpenFileCommand）、狀態列訊息（StatusMessage）。
+  - Services/（規劃/擴充中）
+    - IViewer3DService.cs、WindowsUiViewer3DService.cs、StrongWindowsUiViewer3DService.cs、StubViewer3DService.cs：3D 服務抽象與實作（集合高亮、Isolate/Hide/ShowAll、UpdateHiddenList、HitTest）。
+    - IfcStringHelper.cs：xBIM 型別/值 → string 的統一轉換。
+  - Models/
+    - SpatialNode.cs、ElementProperty.cs：TreeView 與屬性面板資料模型（含 IsVisible/IsSelected 以支援多選與可見性）。
+
+- README.md：功能與操作說明（多選、可見性、3D 右鍵功能、Schematic fallback）。
+- DEVELOPMENT_LOG.md：每日開發紀錄與品質狀態。
+- SchematicModule_Report.md：原理圖模組報告（拓撲生成、fallback、互動）。
+- Debug Report.md：錯誤診斷與驗證清單；3D 高亮問題可先查 `viewer3d.log`（位於 `app/IFC_Viewer_00/bin/Debug/net8.0-windows/`）。
+- Debug Report.md：錯誤診斷與驗證清單。
+
+> 註：部分檔案目前為規劃/文件描述狀態，會於後續迭代中補齊程式碼與對應 XAML。
+
+## 互動流程（重點）
+
+- TreeView 多選：
+  - 單擊單選、Ctrl 切換、Shift 範圍選取（以最後一次 Anchor 為基準）。
+  - ViewModel 維護 SelectedNodes；同步 3D 以集合高亮。
+- 可見性切換：
+  - 勾選 IsVisible 遞迴影響子節點；ViewModel 蒐集 Hidden 清單呼叫 3D 的 UpdateHiddenList。
+- 3D 右鍵：
+  - Isolate/Hide/ShowAll 透過集合更新 + ReloadModel（保留相機/選取）+ ZoomSelected/ViewHome。
+
+## 最近更新（2025-09-21）
+- `Services/StrongWindowsUiViewer3DService.cs` 強化多選與單選回退邏輯：
+  - 若控制項 `Selection` 屬於 `EntitySelection`（非純集合），會以其內部屬性/方法嘗試填入資料；
+  - 若不支援多選，退回 `SelectedEntity`，確保至少單選可見；
+  - 清空選取會清除 Selection 或設 `SelectedEntity = null`，並刷新 UI。
+- 診斷路徑：
+  - `viewer3d.log` 會出現 `[Service] HighlightEntities(labels) ...`、`[StrongViewer] Using member for selection: ...`、`Fallback SelectedEntity assigned ...` 等訊息。
+
+## 相容性與外部來源
+
+- xBIM WindowsUI（DrawingControl3D）在不同版本中集合與 enum 簽章可能不同：
+  - 集合命名：IsolateInstances/IsolatedInstances、HiddenInstances/HiddenEntities
+  - ReloadModel enum：ModelRefreshOptions（含巢狀成員）
+  - 已以反射 fallback 與多層 Refresh 鏈處理相容性
+
+## 後續規劃
+
+- 將階層建置改為非同步，避免 UI 凍結
+- 完成集合高亮 API 的全域替換與呼叫點收斂
+- 原理圖視圖（SchematicView）整合與 3D 雙向同步
+````
 
 ## 互動流程（重點）
 

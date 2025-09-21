@@ -14,8 +14,13 @@ namespace IFC_Viewer_00.Services
         public void SetModel(IfcStore? model) { /* no-op */ }
         public void ResetCamera() { /* no-op */ }
         public void HighlightEntity(IIfcObject? entity, bool clearPrevious = true) { /* no-op */ }
+        public void HighlightEntities(IEnumerable<int> entityLabels, bool clearPrevious = true) { /* no-op */ }
+    public void HighlightEntities(IEnumerable<IPersistEntity> entitiesToHighlight) { /* no-op */ }
         public void Isolate(IIfcObject? entity) { /* no-op */ }
+        public void Isolate(IEnumerable<int> entityLabels) { /* no-op */ }
         public void Hide(IIfcObject? entity, bool recursive = true) { /* no-op */ }
+        public void Hide(IEnumerable<int> entityLabels, bool recursive = true) { /* no-op */ }
+    public void UpdateHiddenList(IEnumerable<IPersistEntity> hiddenEntities) { /* no-op */ }
         public void ShowAll() { /* no-op */ }
         public IIfcObject? HitTest(double x, double y) => null;
     }
