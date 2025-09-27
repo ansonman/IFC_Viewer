@@ -149,6 +149,34 @@ namespace IFC_Viewer_00.Services
             TryInvokeReflective(_control, "ResetCamera");
         }
 
+        public void SetModelOpacity(double opacity)
+        {
+            opacity = Math.Max(0.0, Math.Min(1.0, opacity));
+            if (_viewer != null)
+            {
+                TryInvokeStrongly(() => _viewer.ModelOpacity = opacity);
+                // 某些版本也支援 SetOpacity(Double)
+                TryInvokeStrongly(() => _viewer.SetOpacity(opacity));
+                return;
+            }
+            // 反射路徑：優先 ModelOpacity，再退回 SetOpacity
+            try
+            {
+                var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+                var pi = _control.GetType().GetProperty("ModelOpacity", flags);
+                if (pi?.CanWrite == true)
+                {
+                    pi.SetValue(_control, opacity);
+                }
+                else
+                {
+                    var mi = _control.GetType().GetMethod("SetOpacity", flags, new Type[] { typeof(double) });
+                    mi?.Invoke(_control, new object[] { opacity });
+                }
+            }
+            catch { }
+        }
+
         public void HighlightEntity(IIfcObject? entity, bool clearPrevious = true)
         {
             if (entity == null) return;
@@ -503,32 +531,8 @@ namespace IFC_Viewer_00.Services
                 if (viewport == null) return;
                 EnsureOverlayRoot(viewport);
 
-                // 計算輕微視線偏移，避免在同一個 Viewport 中被實體遮擋
-                var cam = viewport.Camera as ProjectionCamera;
-                Vector3D viewDir = new Vector3D(0, 0, -1);
-                if (cam != null)
-                {
-                    viewDir = cam.LookDirection;
-                }
-                if (viewDir.LengthSquared < 1e-12) viewDir = new Vector3D(0, 0, -1);
-                viewDir.Normalize();
-
-                // 以輸入資料的包圍盒對角線估算偏移量（千分之五）
-                var allPts = new List<Point3D>();
-                foreach (var (s, e) in axes) { allPts.Add(s); allPts.Add(e); }
-                if (endpoints != null) allPts.AddRange(endpoints);
-                double eps = 0.0;
-                if (allPts.Count >= 2)
-                {
-                    double minX = allPts.Min(p => p.X), maxX = allPts.Max(p => p.X);
-                    double minY = allPts.Min(p => p.Y), maxY = allPts.Max(p => p.Y);
-                    double minZ = allPts.Min(p => p.Z), maxZ = allPts.Max(p => p.Z);
-                    var dx = maxX - minX; var dy = maxY - minY; var dz = maxZ - minZ;
-                    var diag = Math.Sqrt(dx * dx + dy * dy + dz * dz);
-                    eps = Math.Max(1e-6, diag * 0.005); // 0.5% 對角線
-                }
-                // 向攝影機方向微調（-LookDirection 方向靠近相機）
-                var offset = -viewDir * eps;
+                // 準確呈現：不做任何視線偏移，直接使用原始世界座標
+                var offset = new Vector3D(0, 0, 0);
 
                 _overlayLines ??= new LinesVisual3D();
                 _overlayLines.Thickness = Math.Max(0.5, lineThickness);

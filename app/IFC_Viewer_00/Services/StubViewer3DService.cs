@@ -15,6 +15,7 @@ namespace IFC_Viewer_00.Services
         public void SetModel(IModel? model) { /* no-op */ }
         public void SetModel(IfcStore? model) { /* no-op */ }
         public void ResetCamera() { /* no-op */ }
+    public void SetModelOpacity(double opacity) { /* no-op */ }
         public void HighlightEntity(IIfcObject? entity, bool clearPrevious = true) { /* no-op */ }
         public void HighlightEntities(IEnumerable<int> entityLabels, bool clearPrevious = true) { /* no-op */ }
     public void HighlightEntities(IEnumerable<IPersistEntity> entitiesToHighlight) { /* no-op */ }

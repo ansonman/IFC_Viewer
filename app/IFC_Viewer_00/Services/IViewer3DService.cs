@@ -15,6 +15,8 @@ namespace IFC_Viewer_00.Services
         void SetModel(IModel? model);
         void SetModel(IfcStore? model);
         void ResetCamera();
+        // 設定整體模型不透明度（0~1）。部分實作會呼叫底層控制項的 SetOpacity/ModelOpacity。
+        void SetModelOpacity(double opacity);
 
         // 多筆版本（盡力而為：若控制項僅支援單選，至少會高亮最後一個）
         void HighlightEntities(IEnumerable<int> entityLabels, bool clearPrevious = true);

@@ -39,6 +39,10 @@ namespace IFC_Viewer_00.ViewModels
         [ObservableProperty]
         private string? statusMessage;
 
+    // 3D 模型透明度（0~1），變更時即時套用到 3D 控制項
+    [ObservableProperty]
+    private double modelOpacity = 1.0;
+
     [ObservableProperty]
     private ObservableCollection<ElementProperty> selectedElementProperties = new();
 
@@ -83,6 +87,8 @@ namespace IFC_Viewer_00.ViewModels
 
             // 監聽全域選取變更，更新屬性面板摘要或單選詳情（避免循環）
             _selection.SelectionChanged += OnGlobalSelectionChanged;
+            // 初始化預設透明度
+            _viewer3D.SetModelOpacity(ModelOpacity);
         }
         // Sprint 1: 3D 物件高亮 - 供未來擴充
     partial void OnHighlightedEntityChanged(IIfcObject? value)
@@ -231,6 +237,8 @@ namespace IFC_Viewer_00.ViewModels
             Model = loadedModel; // 觸發 OnModelChanged → SetModel/ResetCamera/BuildHierarchy
             old?.Dispose();
             StatusMessage = "模型載入成功！";
+            // 套用當前透明度
+            _viewer3D.SetModelOpacity(ModelOpacity);
         }
 
         // Sprint 2/3：系統優先的原理圖生成與顯示
@@ -508,10 +516,25 @@ namespace IFC_Viewer_00.ViewModels
                 _viewer3D?.SetModel((IfcStore?)null);
             }
             _viewer3D?.ResetCamera();
+            // 模型變更後套用透明度
+            if (_viewer3D != null) _viewer3D.SetModelOpacity(ModelOpacity);
             BuildHierarchy();
 
             // 重新訂閱可見性與選取事件
             SubscribeHierarchyNodeEvents();
+        }
+
+        partial void OnModelOpacityChanged(double value)
+        {
+            // 透明度限界並套用
+            var v = Math.Max(0.0, Math.Min(1.0, value));
+            if (Math.Abs(v - value) > double.Epsilon)
+            {
+                ModelOpacity = v;
+                return;
+            }
+            _viewer3D?.SetModelOpacity(v);
+            StatusMessage = $"模型透明度: {v:0.00}";
         }
 
         /// <summary>

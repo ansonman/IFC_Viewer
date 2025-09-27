@@ -888,28 +888,8 @@ namespace IFC_Viewer_00.Services
                     var viewport = EnsureViewport();
                     if (viewport == null) return;
                     EnsureOverlayRoot(viewport);
-
-                    // 計算視線方向微小偏移，避免 overlay 被實體遮擋
-                    var cam = viewport.Camera as ProjectionCamera;
-                    Vector3D viewDir = new Vector3D(0, 0, -1);
-                    if (cam != null) viewDir = cam.LookDirection;
-                    if (viewDir.LengthSquared < 1e-12) viewDir = new Vector3D(0, 0, -1);
-                    viewDir.Normalize();
-                    // 以輸入資料包圍盒對角線長度 * 0.5% 當偏移距離
-                    var allPts = new List<Point3D>();
-                    foreach (var (s, e) in axes) { allPts.Add(s); allPts.Add(e); }
-                    if (endpoints != null) allPts.AddRange(endpoints);
-                    double eps = 0.0;
-                    if (allPts.Count >= 2)
-                    {
-                        double minX = allPts.Min(p => p.X), maxX = allPts.Max(p => p.X);
-                        double minY = allPts.Min(p => p.Y), maxY = allPts.Max(p => p.Y);
-                        double minZ = allPts.Min(p => p.Z), maxZ = allPts.Max(p => p.Z);
-                        var dx = maxX - minX; var dy = maxY - minY; var dz = maxZ - minZ;
-                        var diag = Math.Sqrt(dx * dx + dy * dy + dz * dz);
-                        eps = Math.Max(1e-6, diag * 0.005);
-                    }
-                    var offset = -viewDir * eps; // 往相機方向挪動
+                    // 準確呈現：不做任何視線偏移，直接使用原始世界座標
+                    var offset = new Vector3D(0, 0, 0);
 
                     // Build lines
                     _overlayLines ??= new LinesVisual3D();
@@ -938,6 +918,21 @@ namespace IFC_Viewer_00.Services
 
                     // Attach to visual tree
                     AttachOverlayIfNeeded(viewport);
+                }
+                catch { }
+            });
+        }
+
+        public void SetModelOpacity(double opacity)
+        {
+            RunOnUi(() =>
+            {
+                try
+                {
+                    opacity = Math.Max(0.0, Math.Min(1.0, opacity));
+                    // 直接呼叫強型別控制項的 ModelOpacity/SetOpacity
+                    _viewer.ModelOpacity = opacity;
+                    try { _viewer.SetOpacity(opacity); } catch { }
                 }
                 catch { }
             });
