@@ -1,6 +1,8 @@
 using Xbim.Ifc;
 using Xbim.Ifc4.Interfaces;
 using Xbim.Common;
+using System.Windows.Media;
+using System.Windows.Media.Media3D;
 
 namespace IFC_Viewer_00.Services
 {
@@ -23,5 +25,16 @@ namespace IFC_Viewer_00.Services
     public void UpdateHiddenList(IEnumerable<IPersistEntity> hiddenEntities) { /* no-op */ }
         public void ShowAll() { /* no-op */ }
         public IIfcObject? HitTest(double x, double y) => null;
+
+        public void ShowOverlayPipeAxes(
+            IEnumerable<(Point3D Start, Point3D End)> axes,
+            IEnumerable<Point3D>? endpoints = null,
+            Color? lineColor = null,
+            double lineThickness = 2.0,
+            Color? pointColor = null,
+            double pointSize = 3.0
+        ) { /* no-op */ }
+
+        public void ClearOverlay() { /* no-op */ }
     }
 }

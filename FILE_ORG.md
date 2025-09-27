@@ -20,7 +20,6 @@
 - README.md：功能與操作說明（多選、可見性、3D 右鍵功能、Schematic fallback）。
 - DEVELOPMENT_LOG.md：每日開發紀錄與品質狀態。
 - SchematicModule_Report.md：原理圖模組報告（拓撲生成、fallback、互動）。
-- Debug Report.md：錯誤診斷與驗證清單；3D 高亮問題可先查 `viewer3d.log`（位於 `app/IFC_Viewer_00/bin/Debug/net8.0-windows/`）。
 - Debug Report.md：錯誤診斷與驗證清單。
 
 > 註：部分檔案目前為規劃/文件描述狀態，會於後續迭代中補齊程式碼與對應 XAML。
@@ -34,14 +33,6 @@
   - 勾選 IsVisible 遞迴影響子節點；ViewModel 蒐集 Hidden 清單呼叫 3D 的 UpdateHiddenList。
 - 3D 右鍵：
   - Isolate/Hide/ShowAll 透過集合更新 + ReloadModel（保留相機/選取）+ ZoomSelected/ViewHome。
-
-## 最近更新（2025-09-21）
-- `Services/StrongWindowsUiViewer3DService.cs` 強化多選與單選回退邏輯：
-  - 若控制項 `Selection` 屬於 `EntitySelection`（非純集合），會以其內部屬性/方法嘗試填入資料；
-  - 若不支援多選，退回 `SelectedEntity`，確保至少單選可見；
-  - 清空選取會清除 Selection 或設 `SelectedEntity = null`，並刷新 UI。
-- 診斷路徑：
-  - `viewer3d.log` 會出現 `[Service] HighlightEntities(labels) ...`、`[StrongViewer] Using member for selection: ...`、`Fallback SelectedEntity assigned ...` 等訊息。
 
 ## 相容性與外部來源
 
@@ -61,34 +52,21 @@
 
 - 3D 點選（左鍵）：
   1. `MainWindow.xaml.cs` 以 HitTest 取得 `IIfcObject`。
-  2. 寫入 VM 的 `HighlightedEntity`，更新屬性面板並呼叫 `SyncTreeViewSelection`。
-  3. 服務以 `SelectedEntity` 高亮控制項。
-- 右鍵選單：
-  - 開啟前先 HitTest 設定 `HighlightedEntity`，命令執行時以它為優先目標。
   - Isolate/Hide：以集合驅動更新（Clear + Add），相容 `IsolateInstances/IsolatedInstances` 與 `HiddenInstances/HiddenEntities`，支援 `List<IPersistEntity>` 或 `List<int>`；執行於 UI 執行緒；刷新採 ReloadModel（偏好 View/Filter/PreserveCamera）與多層備援；Isolate 後 `ZoomSelected`。
   - ShowAll：清空隔離/隱藏（Clear），刷新（同上），再 `ShowAll` 與 `ViewHome`。
-- 雙擊：優先使用目前選取；若無則先 HitTest，再 `ZoomSelected`（Dispatcher 遞延以確保高亮幾何已就緒）。
 
-## 常見類型/命名相容性
 
-- 隔離/隱藏集合：
   - 可能名稱：`IsolateInstances` / `IsolatedInstances`、`HiddenInstances` / `HiddenEntities`。
-  - 可能型別：`List<IPersistEntity>` 或 `List<int>`（EntityLabel）。
   - 更新策略：採用清空（Clear）後新增（Add），避免將集合設為 null 造成內部刷新忽略。
-
 ## 注意事項
-
 - Hover 自動選取已關閉，避免頻繁觸發；現僅支援點擊/右鍵/雙擊。
-- Build 時的 NU1701 警告可忽略（套件目標 .NET Framework），目前功能正常。
 # 專案目錄與檔案結構說明（FILE_ORG.md）
 
 本文件說明 `IFC_Viewer_00` 專案的目錄結構與各資料夾、檔案的用途，方便團隊協作與維護。
-
 ---
 
 ## 根目錄（`./`）
 - `IFC_Viewer_00.sln`：Visual Studio/VS Code 解決方案檔，統整所有專案。
-- `README.md`：專案說明、啟動方式、開發建議與疑難排解。
 - `FILE_ORG.md`：本檔案，說明目錄與檔案用途。
 - `DEVELOPMENT_LOG.md`：開發日誌，記錄每次技術變更（如 xBIM 6.x API 遷移、型別修正、建置結果）。
 - `Project1.ifc`：測試用 IFC 檔案，可透過環境變數 `IFC_STARTUP_FILE` 自動載入。
@@ -159,6 +137,11 @@ app/
   - 強型別服務：直接使用 `Xbim.Presentation.DrawingControl3D` 與 `Xbim3DModelContext` 建幾何；反射式服務：最大化兼容不同 WindowsUI 版本的成員簽章；皆支援相機擬合、Refresh 與 `ShowAll` 的回退序列。
 - `Resources/`：
   - 可放圖片、icons、樣式、語系檔等靜態資源
+
+執行期日誌
+-----------
+- `bin/Debug|Release/net8.0-windows/viewer3d.log`：3D 與部分服務 Trace。
+- Schematic/AS 流程會輸出 Ports 與 Edges 蒐集/配對的統計，協助驗收（若缺 `IfcRelConnectsPorts`，UI 會顯示提醒 Banner）。
 FILE_ORG
 ========
 
@@ -216,9 +199,33 @@ app/IFC_Viewer_00/
 
 – `app/IFC_Viewer_00/Services/`
   - `SchematicService.cs`：`GenerateTopologyAsync(IModel)` 解析 `IIfcDistributionElement` 與 `IfcRelConnectsPorts` 生成拓撲；以 EntityLabel 去重；位置取自 LocalPlacement。
+  - 進階：`GenerateFromSystemsAsync(IStepModel)`（系統優先 Ports-only）；AS 流程：`GeneratePortPointSchematicFromSegmentsAsync(...)` 與 `ProjectAllSystemPortsToData(...)`（三層 Ports 蒐集、以 `IfcRelConnectsPorts` 建邊、最佳投影面為最小跨度軸剔除）。
 
 – `app/IFC_Viewer_00/ViewModels/`
   - `SchematicViewModel.cs`：載入拓撲、投影 2D，提供 NodeView/EdgeView（含 Brush）；內建力導向自動佈局與點擊命令；`RequestHighlight` 事件給視窗層同步 3D。
+  - `SelectSegmentsForASSchematicViewModel.cs`：AS 流程用，監聽 3D 選取、收集兩段 `IIfcPipeSegment` 後呼叫服務產生 AS 原理圖。
 
 – `app/IFC_Viewer_00/Views/`
   - `SchematicView.xaml` / `.xaml.cs`：Canvas + ItemsControl 呈現節點/邊；點擊節點/邊透過命令觸發 `RequestHighlight`，由視窗轉呼叫 3D 服務高亮與縮放；主視窗工具列有「生成原理圖」。
+  - `ReferencePipeSelectionView.xaml`：AS 流程的兩段管件選取視窗（補齊 Window 根元素避免建置錯誤）。
+
+---
+
+補充（2025-09-22：Schematic 視圖與互動更新）
+
+- `Views/SchematicView.xaml`：
+  - 繪製層級：使用兩個 ItemsControl，邊線（Line）在下層、節點在上層，避免節點被線覆蓋。
+  - 邊線綁定：改綁 EdgeView 的節點視圖座標，`X1={Binding Start.X}`、`Y1={Binding Start.Y}`、`X2={Binding End.X}`、`Y2={Binding End.Y}`。
+  - 視圖變換：Canvas 套用 TransformGroup（ScaleTransform 作為 Zoom、TranslateTransform 作為 Pan）。
+  - 互動：滑鼠滾輪縮放（以指標為中心）、中鍵拖曳平移；提供「重置視圖」與「重新布局」按鈕。
+  - 空邊提示：若 `Edges.Count == 0` 顯示提示 Banner（模型未含 Ports 關係）。
+
+- `ViewModels/SchematicViewModel.cs`：
+  - 佈局：力導向（預設 200 次迭代）。
+  - Fit-to-Canvas：
+    - 一般方法：`FitToCanvas()` 依 `CanvasWidth/CanvasHeight/CanvasPadding`（預設 1600/1000/40）將節點座標縮放/平移至畫布範圍。
+    - 載入方法：`LoadData(SchematicData)` 採固定 800x600 畫布、padding 20 的適配，先更新 `Node.Position2D`，再同步 NodeView `X/Y` 與建立邊視圖。
+  - 公開方法：`RefitToCanvas()` 再次依目前畫布設定適配；`Relayout(int iterations=200, bool refit=true)` 重新佈局並可選擇自動適配。
+
+- `Services/SchematicService.cs`：
+  - 系統優先：`GenerateFromSystemsAsync(IStepModel)` 依 `IfcRelAssignsToGroup` 取得系統成員，以 `IfcRelConnectsPorts` 建立邊；強化 Group 匹配（EntityLabel/GlobalId 字串），並以 `Trace` 輸出統計摘要。

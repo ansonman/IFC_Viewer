@@ -298,6 +298,16 @@ namespace IFC_Viewer_00.Views
                 // 顯示視窗
                 var win = new SchematicView { DataContext = svm, Owner = this };
                 win.Show();
+
+                // 若為 ports-only 且模型未含 IfcRelConnectsPorts，Edges 會為 0：提示使用者
+                try
+                {
+                    if (svm.Edges != null && svm.Edges.Count == 0)
+                    {
+                        MessageBox.Show(this, "模型未含 IfcRelConnectsPorts 連線，僅顯示節點。", "原理圖", MessageBoxButton.OK, MessageBoxImage.Information);
+                    }
+                }
+                catch { }
             }
             catch (System.Exception ex)
             {
@@ -597,6 +607,64 @@ namespace IFC_Viewer_00.Views
         {
             // TODO: 依新版 xBIM/WindowsUI API 實作 ShowAll
             // Viewer3D.ShowAll();
+        }
+
+        private async void LoadMockSchematic_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var mock = new IFC_Viewer_00.Services.MockSchematicService();
+                var data = await mock.GetMockDataAsync();
+                var service = new IFC_Viewer_00.Services.SchematicService();
+                var svm = new IFC_Viewer_00.ViewModels.SchematicViewModel(service, _selectionService);
+                // 直接從資料載入
+                try { await svm.LoadFromDataAsync(data); }
+                catch { /* 若未實作則退回直接設定 */
+                    try
+                    {
+                        // 簡單注入：模擬 LoadFromDataAsync 的行為
+                        svm.Nodes.Clear(); svm.Edges.Clear();
+                        var map = new System.Collections.Generic.Dictionary<object, IFC_Viewer_00.ViewModels.SchematicNodeView>();
+                        foreach (var n in data.Nodes)
+                        {
+                            var nv = new IFC_Viewer_00.ViewModels.SchematicNodeView
+                            {
+                                Node = n,
+                                X = n.Position2D.X * svm.Scale,
+                                Y = n.Position2D.Y * svm.Scale,
+                                NodeBrush = System.Windows.Media.Brushes.SteelBlue
+                            };
+                            map[n] = nv; svm.Nodes.Add(nv);
+                        }
+                        foreach (var e2 in data.Edges)
+                        {
+                            if (e2.StartNode == null || e2.EndNode == null) continue;
+                            if (!map.TryGetValue(e2.StartNode, out var s)) continue;
+                            if (!map.TryGetValue(e2.EndNode, out var t)) continue;
+                            var ev = new IFC_Viewer_00.ViewModels.SchematicEdgeView
+                            {
+                                Edge = e2,
+                                Start = s,
+                                End = t,
+                                EdgeBrush = System.Windows.Media.Brushes.DarkSlateGray
+                            };
+                            svm.Edges.Add(ev);
+                        }
+                    }
+                    catch { }
+                }
+
+                var win = new IFC_Viewer_00.Views.SchematicView { DataContext = svm, Owner = this };
+                win.Show();
+                if (data.Edges.Count == 0)
+                {
+                    MessageBox.Show(this, "模型未含 Ports 關係，僅顯示節點（Mock 仍可顯示邊）。", "原理圖", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+            }
+            catch (System.Exception ex)
+            {
+                MessageBox.Show(this, $"載入 Mock 原理圖失敗: {ex.Message}", "原理圖", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         // TreeView 選取同步（SelectedItemChanged 事件橋接）

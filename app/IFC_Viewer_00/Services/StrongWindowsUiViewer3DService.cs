@@ -26,6 +26,11 @@ namespace IFC_Viewer_00.Services
         private readonly DrawingControl3D _viewer;
         private IModel? _model;
         private bool _dumped;
+        // Overlay visuals (pipe axes and endpoints)
+        private readonly object _overlayLock = new();
+        private ModelVisual3D? _overlayRoot; // parent container
+        private LinesVisual3D? _overlayLines;
+        private PointsVisual3D? _overlayPoints;
         // 快取以降低反射與視覺樹查詢成本
         private (MemberInfo mi, bool isProperty)? _selMemberCached;
         private (MemberInfo mi, bool isProperty)? _isoMemberCached;
@@ -229,6 +234,8 @@ namespace IFC_Viewer_00.Services
                 try { (_viewer as FrameworkElement)?.InvalidateMeasure(); } catch { }
                 try { (_viewer as FrameworkElement)?.InvalidateArrange(); } catch { }
                 try { (_viewer as FrameworkElement)?.UpdateLayout(); } catch { }
+                // 清除既有 overlay 以避免殘留
+                try { ClearOverlay(); } catch { }
             });
         }
 
@@ -862,6 +869,130 @@ namespace IFC_Viewer_00.Services
                 });
             }
             catch { return null; }
+        }
+
+        // ========= 3D Overlay API =========
+        public void ShowOverlayPipeAxes(
+            IEnumerable<(Point3D Start, Point3D End)> axes,
+            IEnumerable<Point3D>? endpoints = null,
+            System.Windows.Media.Color? lineColor = null,
+            double lineThickness = 2.0,
+            System.Windows.Media.Color? pointColor = null,
+            double pointSize = 3.0)
+        {
+            if (axes == null) return;
+            RunOnUi(() =>
+            {
+                try
+                {
+                    var viewport = EnsureViewport();
+                    if (viewport == null) return;
+                    EnsureOverlayRoot(viewport);
+
+                    // 計算視線方向微小偏移，避免 overlay 被實體遮擋
+                    var cam = viewport.Camera as ProjectionCamera;
+                    Vector3D viewDir = new Vector3D(0, 0, -1);
+                    if (cam != null) viewDir = cam.LookDirection;
+                    if (viewDir.LengthSquared < 1e-12) viewDir = new Vector3D(0, 0, -1);
+                    viewDir.Normalize();
+                    // 以輸入資料包圍盒對角線長度 * 0.5% 當偏移距離
+                    var allPts = new List<Point3D>();
+                    foreach (var (s, e) in axes) { allPts.Add(s); allPts.Add(e); }
+                    if (endpoints != null) allPts.AddRange(endpoints);
+                    double eps = 0.0;
+                    if (allPts.Count >= 2)
+                    {
+                        double minX = allPts.Min(p => p.X), maxX = allPts.Max(p => p.X);
+                        double minY = allPts.Min(p => p.Y), maxY = allPts.Max(p => p.Y);
+                        double minZ = allPts.Min(p => p.Z), maxZ = allPts.Max(p => p.Z);
+                        var dx = maxX - minX; var dy = maxY - minY; var dz = maxZ - minZ;
+                        var diag = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+                        eps = Math.Max(1e-6, diag * 0.005);
+                    }
+                    var offset = -viewDir * eps; // 往相機方向挪動
+
+                    // Build lines
+                    _overlayLines ??= new LinesVisual3D();
+                    _overlayLines.Thickness = Math.Max(0.5, lineThickness);
+                    _overlayLines.Color = lineColor ?? System.Windows.Media.Colors.OrangeRed;
+                    _overlayLines.Points = new Point3DCollection();
+                    foreach (var (s, e) in axes)
+                    {
+                        _overlayLines.Points.Add(new Point3D(s.X + offset.X, s.Y + offset.Y, s.Z + offset.Z));
+                        _overlayLines.Points.Add(new Point3D(e.X + offset.X, e.Y + offset.Y, e.Z + offset.Z));
+                    }
+
+                    // Build points
+                    if (endpoints != null)
+                    {
+                        _overlayPoints ??= new PointsVisual3D();
+                        _overlayPoints.Size = Math.Max(0.5, pointSize);
+                        _overlayPoints.Color = pointColor ?? System.Windows.Media.Colors.Black;
+                        var pts = new Point3DCollection();
+                        foreach (var p in endpoints)
+                        {
+                            pts.Add(new Point3D(p.X + offset.X, p.Y + offset.Y, p.Z + offset.Z));
+                        }
+                        _overlayPoints.Points = pts;
+                    }
+
+                    // Attach to visual tree
+                    AttachOverlayIfNeeded(viewport);
+                }
+                catch { }
+            });
+        }
+
+        public void ClearOverlay()
+        {
+            RunOnUi(() =>
+            {
+                try
+                {
+                    var viewport = EnsureViewport();
+                    if (viewport == null) return;
+                    if (_overlayRoot != null)
+                    {
+                        try { viewport.Children.Remove(_overlayRoot); } catch { }
+                        _overlayRoot = null;
+                        _overlayLines = null;
+                        _overlayPoints = null;
+                    }
+                }
+                catch { }
+            });
+        }
+
+        private HelixViewport3D? EnsureViewport()
+        {
+            if (_viewportCached != null) return _viewportCached;
+            _triedViewportCache = true;
+            try
+            {
+                _viewportCached = _viewer.GetType().GetProperty("Viewport")?.GetValue(_viewer) as HelixViewport3D;
+            }
+            catch { _viewportCached = null; }
+            return _viewportCached;
+        }
+
+        private void EnsureOverlayRoot(HelixViewport3D viewport)
+        {
+            if (_overlayRoot != null) return;
+            _overlayRoot = new ModelVisual3D();
+            try { _overlayRoot.SetValue(FrameworkElement.TagProperty, "OverlayRoot"); } catch { }
+        }
+
+        private void AttachOverlayIfNeeded(HelixViewport3D viewport)
+        {
+            if (_overlayRoot == null) return;
+            if (!viewport.Children.Contains(_overlayRoot))
+            {
+                viewport.Children.Add(_overlayRoot);
+            }
+            // Rebuild children
+            try { _overlayRoot.Children.Clear(); } catch { }
+            if (_overlayLines != null) _overlayRoot.Children.Add(_overlayLines);
+            if (_overlayPoints != null) _overlayRoot.Children.Add(_overlayPoints);
         }
 
         private static RayMeshGeometry3DHitTestResult? FindHit(HelixViewport3D viewport, Point position)

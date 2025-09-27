@@ -73,3 +73,32 @@
 
 ### Trace 關鍵字（示例）
 - `HitTest viewport is null`、`TranslatePoint failed`、`Tag read threw`、`no Tag on hit visual`、`returning null entity`。
+
+---
+
+## 2025-09-21：選取事件重複與切換體驗
+
+### 症狀
+- 從 TreeView 觸發選取後，3D 也發出 GlobalSelectionChanged，導致重複高亮或效能抖動。
+- 3D 單擊另一個物件時，必須先點空白才能切換選取。
+
+### 修復
+- `ViewModels/MainViewModel.cs`：`OnGlobalSelectionChanged` 早退判斷，忽略 `SelectionOrigin.TreeView` 來源以避免重複處理。
+- `Services/StrongWindowsUiViewer3DService.cs`：所有 `_viewer` 互動強制經由 UI Dispatcher，避免跨執行緒造成的不穩定與延遲。
+- `Views/MainWindow.xaml.cs`：3D 單擊行為調整為「直接以新物件取代選取」，不需先點空白；Ctrl 仍為累加/切換；點空白清除選取。
+
+### 驗證
+- 連續點選不同物件應能即時切換高亮，無需先清除。
+- TreeView 單選不會造成 3D 端重複 highlight 呼叫。
+- Trace 中可見 `origin=TreeView` 的事件被忽略。
+
+---
+
+## 2025-09-21：Schematic SOP 調整（Ports-only）
+
+### 變更
+- `SchematicService.GenerateTopologyAsync(IModel)` 現在僅依 `IfcRelConnectsPorts` 建立邊；若模型沒有任何該關係，回傳只有節點、無邊。
+- 節點包含 3D/2D 座標（XY 投影），邊包含 `StartNodeId/EndNodeId` 與節點參照。
+
+### 影響
+- 原本的幾何鄰近推斷（<10mm）已移除，避免誤連線；後續如需可改為顯示層可配置功能再行加入。

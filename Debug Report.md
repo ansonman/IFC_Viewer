@@ -1,5 +1,5 @@
 ```markdown
-# IFC Viewer 除錯報告（同步 2025-09-21）
+# IFC Viewer 除錯報告（同步 2025-09-23）
 
 > 目的：快速對齊狀態、重現步驟、收集必要日誌；新增多選/可見性測試清單與 Schematic fallback 說明。
 
@@ -8,7 +8,7 @@
 ## 摘要（TL;DR）
 - 右鍵 Isolate/Hide/ShowAll 綁定已修正（PlacementTarget.DataContext）；3D 可見度應有變化並有 log 記錄。
 - 已加入 TreeView 多選（Ctrl/Shift）與可見性勾選；多選時 3D 採集合高亮；可見性會更新 Hidden 清單。
-- Schematic 在缺 Ports 時使用幾何鄰近 fallback（< 10mm），推斷邊以 IsInferred 標註。
+- Schematic 採 Ports-only（不啟用幾何鄰近推斷）；若缺 `IfcRelConnectsPorts` 關係，視圖僅顯示節點並於 UI 顯示提示 Banner。
  - 多選高亮相容性已加強：若控制項集合要求 `IPersistEntity`，會把 Label 轉換為實體加入集合，並做輕量更新（InvalidateVisual + UpdateLayout），確保即時可見。
 
 ---
@@ -33,10 +33,22 @@
 - [ ] 取消可見的節點，3D Hidden 清單更新，該部分在 3D 隱藏
 - [ ] 再次勾選後，Hidden 清單移除對應，3D 回復顯示
 
-### D. Schematic Fallback（若已接上 UI）
-- [ ] 缺 Ports 的模型資料下，仍能看到節點間的推斷邊
-- [ ] 推斷邊具備 IsInferred 標記（UI 或報表可觀察）
-- [ ] 點擊節點/邊可觸發 3D 高亮（集合高亮 API），ZoomSelected 生效
+### D. Schematic（系統優先 + 邊線呈現 + 視圖互動）
+- [ ] 點擊「生成原理圖」→ 若多系統，出現 `SystemSelectionDialog`；可選擇系統並開啟 Schematic 視窗，標題顯示系統名稱。
+- [ ] `SchematicView.xaml` 中能看到節點與邊線：邊線以 `<Line>` 呈現，座標綁定 Edge 的 `StartNode.Position2D.(X|Y)` 與 `EndNode.Position2D.(X|Y)`（目前灰色 1px，供除錯觀察）。
+- [ ] `Edges.Count == 0` 時顯示提示 Banner：「模型未含 IfcRelConnectsPorts 連線，僅顯示節點。」
+- [ ] 點擊節點/邊可觸發 3D 高亮（集合高亮 API），ZoomSelected 生效。
+- [ ] 滾輪縮放與中鍵平移可用；按下「重置視圖」可清零變換並重新適配畫布；按下「重新布局」可重跑佈局並自動適配。
+- [ ] Fit-to-Canvas：
+  - 一般：`RefitToCanvas()` 會依 `CanvasWidth/CanvasHeight/CanvasPadding`（預設 1600/1000/40）收斂到畫布內。
+  - 載入：`LoadData(...)` 套用 800x600 畫布與 padding 20，更新 `Node.Position2D` 後同步 NodeView。
+  - 投影選面：使用「最小跨度軸剔除」策略（捨棄最小軸，保留另外兩軸作為投影面；平手偏好 XY → XZ → YZ），避免細長模型被壓平成線。
+
+### E. AS 原理圖（兩段 IfcPipeSegment）
+- [ ] 在 3D 中選取兩段 `IfcPipeSegment` 後啟動 AS 流程 → 視圖呈現黑點（Ports）與黑線（連線）
+- [ ] 若僅有黑點無黑線，頂部顯示提示 Banner 表示缺 `IfcRelConnectsPorts`
+- [ ] Trace/Log 中可見：系統/成員/全模型 Ports 蒐集數量、成功建立的邊數
+- [ ] 視圖支援滾輪縮放、中鍵平移、「重置視圖」與「重新布局」
 
 ---
 
@@ -59,7 +71,9 @@
 
 ---
 
-## 已知相容性差異
+## 已知相容性差異與建置注意
+- NU1701 警告：xBIM/HelixToolkit 以 .NET Framework 為目標，相容還原於 net8；不影響功能。
+- 若 EXE 被占用導致 MSB3026/MSB3027：請先關閉執行中的應用再建置。
 - 集合命名：IsolateInstances/IsolatedInstances、HiddenInstances/HiddenEntities
 - ReloadModel 的 enum（ModelRefreshOptions）可能為巢狀型別；已以反射與多層 Refresh Fallback 處理
 

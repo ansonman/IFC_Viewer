@@ -46,22 +46,94 @@
 - xBIM: Xbim.Presentation (WindowsUI), Xbim.Essentials, Xbim.ModelGeometry.Scene, Xbim.Geometry.Engine.Interop
 - HelixToolkit.Wpf
 
-## 原理圖生成模組（已提供 MVP）
+## 原理圖生成模組（系統優先 + 互動強化）
 - 目標：從已載入的 IFC 模型提取管線拓撲，生成 2D 符號化原理圖。
 - 架構：遵循 MVVM + Services，`SchematicService.GenerateTopologyAsync(IModel)` 產生 `SchematicData`（Nodes/Edges）。
-- 行為：
-  - 節點來源：`IIfcDistributionElement`、`IIfcPipeSegment` 等；使用 `EntityLabel` 去重。
-  - 拓撲邊：依 `IfcRelConnectsPorts` 的 `RelatingPort`/`RelatedPort` 建立連線，透過 `HasPorts` 對回節點。
-  - 位置：從 `ObjectPlacement → IfcLocalPlacement → IfcAxis2Placement3D` 取得 XYZ，初始投影至 2D（XY）。
+- 行為（SOP，嚴格遵守 IfcRelConnectsPorts）：
+  - 節點來源：聚焦管線相關構件（目前包含 `IfcPipeSegment`, `IfcPipeFitting`, `IfcFlowTerminal`, `IfcValve`），以 `EntityLabel` 去重。
+  - 拓撲邊：僅依 `IfcRelConnectsPorts` 的 `RelatingPort`/`RelatedPort` 建立連線，透過元素的 `HasPorts` 對回節點。
+  - 位置：從 `ObjectPlacement → IfcLocalPlacement → IfcAxis2Placement3D` 取得 XYZ，並同步存入 3D（`Position3D`）與 2D（`Position2D`=XY）座標。
   - 自動佈局：啟動後在初始位置基礎上執行力導向迭代，降低疊線與重叠。
   - 分色：依 IfcType 產生節點顏色，邊線使用更深色階。
-  - 互動：點擊節點/邊會同步 3D 高亮，並嘗試執行 `ZoomSelected`。
-  - Fallback：當 IFC 缺少 `IfcRelConnectsPorts` 時，採用幾何鄰近（目前閾值 10mm）推斷相鄰節點，並以 `IsInferred = true` 標示推斷邊。
+  - 互動：點擊節點/邊會透過 SelectionService 同步 3D 高亮，並可選配執行 `ZoomSelected`。
+  - 無 Ports 狀況：若模型中找不到任何 `IfcRelConnectsPorts`，將回傳「僅節點、無邊」的 `SchematicData`（不再使用幾何推斷）。
+
+### SOP 2.0：系統優先、Ports-only（2025-09-22）
+- 新增服務方法 `SchematicService.GenerateFromSystemsAsync(IStepModel)`：
+  - 先發現 `IIfcSystem`/`IIfcDistributionSystem`，對每個系統各自產生一份 `SchematicData`。
+  - 以 `IfcRelAssignsToGroup` 取得該系統成員 → 建立節點 → 蒐集成員上的 `HasPorts` → 依 `IfcRelConnectsPorts` 建立邊。
+  - `SchematicEdge.Connection` 會指向對應的 `IfcRelConnectsPorts` 實體；`SchematicNode.Edges` 回填相鄰邊。
+  - `SchematicData.SystemName`/`SystemEntity` 會回傳系統名稱與實體，供 UI 顯示與追蹤。
+
+- 前端整合：
+  - 工具列「生成原理圖」改為呼叫 `GenerateSchematicCommand` → 使用上述 `GenerateFromSystemsAsync`。
+  - 若僅一個系統，直接開啟；若偵測到多個系統，彈出 `SystemSelectionDialog` 讓使用者選擇。
+  - Schematic 邊線繪製：`SchematicView.xaml` 使用第二個 `ItemsControl` 以 `<Line>` 呈現，座標綁定 EdgeView 上的起迄節點座標（`Start.X/Start.Y` 與 `End.X/End.Y`），確保與節點視圖座標一致；`Stroke="Black"`、`StrokeThickness="1.5"`，並置於節點下方分層顯示。
+  - 當 `Edges.Count == 0` 時顯示提示 Banner：「模型未含 IfcRelConnectsPorts 連線，僅顯示節點。」
+
+### 視圖互動與視角控制
+- 縮放/平移：
+  - 滑鼠滾輪縮放（以游標為中心）；按住滑鼠中鍵拖曳以平移。
+  - 透過 `ScaleTransform + TranslateTransform` 構成的 `TransformGroup` 作用在 Canvas 上。
+- 工具列按鈕：
+  - 重置視圖：將縮放/平移復位，並呼叫 `RefitToCanvas()` 將當前節點座標重新適配畫布。
+  - 重新布局：重新執行力導向佈局，並自動適配畫布（Refit）。
+- Fit-to-Canvas：
+  - 一般方法：`SchematicViewModel.FitToCanvas()` 會依據 `CanvasWidth/CanvasHeight/CanvasPadding`（預設 1600/1000/40）計算邊界框、縮放與偏移，更新 NodeView 的 `X/Y`。
+  - 資料載入：`LoadData(SchematicData)` 版實作按需使用固定 800x600 畫布與 padding 20，先更新模型 `Node.Position2D`，再同步 NodeView `X/Y` 與建立 EdgeView；滿足「系統先、僅 Ports」流程下的即時適配需求。
+  - 最佳投影面：以「最小跨度軸剔除」策略自動選擇投影平面（捨棄 X/Y/Z 中跨度最小者，保留另兩軸作為 2D）；平手時偏好 XY → XZ → YZ。
+
+### AS 原理圖流程（兩段 IfcPipeSegment）
+- 目的：以兩段參考管件推導投影平面，將系統 Ports 投影成 2D 黑點，並用黑線連接具有 `IfcRelConnectsPorts` 的 Port 對。
+- 操作步驟：
+  1) 在 3D 視圖中依序選取兩段 `IfcPipeSegment`（可從 UI 啟動「AS 原理圖」工具）。
+  2) 系統會：
+     - 從兩段管件推導最佳 2D 投影平面（最小跨度軸剔除）。
+     - 收集目標系統的 Ports（AssignsToGroup → 成員 HasPorts → 全模型 Ports 保底）。
+     - 將 Ports 投影為 2D 黑點（6px）。
+     - 依 `IfcRelConnectsPorts` 連結成對 Ports，繪製黑線（1.5px）。
+  3) 視圖自動 Fit-to-Canvas（800x600、padding 20），可使用滑鼠滾輪縮放與中鍵平移；「重置視圖」與「重新布局」同樣可用。
+- 疑難排解：
+  - 只看到黑點、沒有邊線：可能模型沒有 `IfcRelConnectsPorts`（或兩端 Port 不在同一系統集合）；UI 會顯示提示 Banner。請開啟 `viewer3d.log` 或 Trace（專案已輸出統計：系統 Port 數、連線數）。
+  - 完全沒有黑點：檢查 AssignsToGroup/HasPorts 是否為空；本流程仍會回退到「全模型 Ports」以保底。
+
+### AS 原理圖 V1：手動平面 + 全系統 Ports 點雲（2025-09-24）
+- 目的：快速以人工指定平面檢視一或多個系統的全部 Port 分佈與資料品質（不畫邊線，專注診斷與來源追蹤）。
+- 流程：
+  1) 啟動 V1 指令 → 選擇一個或多個系統
+  2) 選擇投影平面：XY / XZ / YZ
+  3) 後端對每個系統執行 Ports 抽取（多層策略）→ 投影 → 顯示點集合
+  4) 日誌區塊印出：系統統計（viaHasPorts / viaNested / viaFallback）與每個 PortDetail
+- Ports 抽取三層策略：
+  1) HasPorts：成員元素直接擁有的 Ports
+  2) Nested：`IfcRelNests`（嵌套）關係中的 Ports（模型未使用 HasPorts 時常見）
+  3) Fallback：全模型 `IfcDistributionPort` 掃描後再篩入系統上下文的近似集合
+- PortDetail 欄位（示意）：`Label, Name, HostLabel, HostIfcType, Source(HasPorts|Nested|Fallback), RawXYZ, Projected(x,y), HostName`
+- 顏色規則：
+  - 黑色：宿主為 IfcPipeSegment（視為管段端點）
+  - 紅色：非 PipeSegment 或來自 fallback 的 Port
+- Tooltip：顯示 Port 名稱、Label、Host IfcType、Host Label、是否 PipeSegment。
+- 已修復問題：早期版本全部顯示紅色（原因：Port meta 與渲染順序錯配）→ 以 index 對齊修正。
+- 已知限制：
+  - 部分模型宿主需透過反向 RelNests 追溯（尚未實作）→ 可能造成本應為管段端點的 Port 被標為紅色。
+  - 點過度重疊難以辨識（後續可加 jitter / 疊點計數）。
+  - 尚無圖例 / 篩選；可後續加入顯示切換（只顯示管段端點）。
+
+### 資料合約（Data Contracts）
+- Node（`SchematicNode`）：`Id`, `Name`, `IfcType`, `Position3D`, `Position2D`, `Entity`, `Edges`
+- Edge（`SchematicEdge`）：`Id`, `StartNodeId`, `EndNodeId`, `StartNode`, `EndNode`, `Entity`, `Connection`, `IsInferred`
+  - 註：`Connection` 指向 `IfcRelConnectsPorts`，利於追溯原 IFC 關聯；目前 SOP 僅由 Ports 建立連線，因此 `IsInferred` 預期為 `false`，保留欄位以利未來擴充。
+- Graph（`SchematicData`）：`Nodes`, `Edges`, `SystemName`, `SystemEntity`
+- PortDetail（V1 附加記錄）：`Label`, `Name`, `HostLabel`, `HostIfcType`, `Source`, `RawXYZ`, `Projected`, `HostName`, `IsPipeSegment`
+
+### 模擬資料服務（Mock）
+- `MockSchematicService.GetMockDataAsync()` 提供 6 節點/5 邊的硬編碼資料，節點 `Position2D` 已分散；可用於前端先行開發。
 
 ### 使用方式
 1. 載入 IFC 後，點工具列的「生成原理圖」。
-2. 觀察節點與邊線出現並自動展開；不同 IfcType 呈現不同顏色。
-3. 在原理圖點選節點（或邊），主畫面的 3D 視圖會高亮相對應物件並縮放至選取。
+2. 若偵測到多個系統，會跳出「系統選擇」對話框，選定一個系統後開啟原理圖視窗；視窗標題會顯示系統名稱。
+3. 觀察節點與邊線出現並自動展開；不同 IfcType 呈現不同顏色。若 `Edges.Count == 0`，上方會顯示提示 Banner（僅節點、無連線）。
+4. 在原理圖點選節點（或邊），主畫面的 3D 視圖會高亮相對應物件並縮放至選取。
 
 > 限制：力導向為快速近似；大型網路可調低迭代次數或調整 `SchematicViewModel.Scale`。未實作自動避線與群集，但可後續擴充。
 
@@ -112,6 +184,7 @@ $env:IFC_STARTUP_FILE='j:\AI_Project\IFC_Viewer_00\Project1.ifc'; dotnet run --p
   - 多選高亮未生效：
     - 確認 `SelectedEntities`/`HighlightedEntities` 集合型別是否為 `List<int>` 或 `List<IPersistEntity>`；本專案已支援兩者（自動 Label→實體映射）。
     - 若控制項只提供 `Selection: EntitySelection`，請同時提供該型別可用屬性/方法的日誌，以便擴充適配。
+  - V1 點全部為紅色：請確認是否已使用最新修正（index 對齊 meta）；若仍為紅色，表示模型中 Ports 未能由 HasPorts / Nested 正確找到宿主，需實作 RelNests 反向解析。
 
 ### 快速驗收（Smoke test）
 1) 載入 IFC 後，在 3D 視圖單擊任一物件：
@@ -123,7 +196,7 @@ $env:IFC_STARTUP_FILE='j:\AI_Project\IFC_Viewer_00\Project1.ifc'; dotnet run --p
 4) 右鍵 Isolate/Hide/ShowAll：
   - 3D 呈現應即時變更；log 可見 Reload/ZoomSelected 的 Trace。
 5) 生成原理圖：
-  - 對於缺 Ports 的模型，仍會透過幾何鄰近（<10mm）畫出推斷邊且標記 IsInferred。
+  - 若模型缺少 `IfcRelConnectsPorts`，本版將只呈現節點、邊線為空（SOP：不啟用幾何推斷）。
 
 ## 已知差異與相容性
 - 不同 xBIM 版本的 API 與集合命名不同，本專案透過反射與多種 fallback 覆蓋：

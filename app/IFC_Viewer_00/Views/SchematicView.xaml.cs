@@ -7,6 +7,12 @@ namespace IFC_Viewer_00.Views
 {
     public partial class SchematicView : Window
     {
+        private Point? _lastPanPoint;
+        private double _currentScale = 1.0;
+        private const double MinScale = 0.1;
+        private const double MaxScale = 10.0;
+        private const double ZoomFactor = 1.15; // 每格滾輪的縮放倍率
+
         public SchematicView()
         {
             try
@@ -16,6 +22,10 @@ namespace IFC_Viewer_00.Views
             }
             catch { }
             this.Loaded += SchematicView_Loaded;
+            this.PreviewMouseWheel += OnPreviewMouseWheel;
+            this.MouseDown += OnMouseDown;
+            this.MouseMove += OnMouseMove;
+            this.MouseUp += OnMouseUp;
         }
 
         private void SchematicView_Loaded(object sender, RoutedEventArgs e)
@@ -25,6 +35,25 @@ namespace IFC_Viewer_00.Views
             {
                 if (this.DataContext is SchematicViewModel svm)
                 {
+                    // 初始化縮放中心為畫布中心
+                    try
+                    {
+                        var canvas = this.FindName("Canvas") as System.Windows.Controls.Canvas;
+                        if (canvas != null)
+                        {
+                            var tg = canvas.RenderTransform as System.Windows.Media.TransformGroup;
+                            if (tg != null)
+                            {
+                                if (tg.Children.Count >= 2 && tg.Children[0] is System.Windows.Media.ScaleTransform sc)
+                                {
+                                    sc.CenterX = canvas.ActualWidth / 2.0;
+                                    sc.CenterY = canvas.ActualHeight / 2.0;
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+
                     var owner = this.Owner as MainWindow;
                     if (owner != null)
                     {
@@ -84,6 +113,144 @@ namespace IFC_Viewer_00.Views
                             };
                         }
                     }
+                }
+            }
+            catch { }
+        }
+
+        private void OnPreviewMouseWheel(object sender, System.Windows.Input.MouseWheelEventArgs e)
+        {
+            try
+            {
+                var canvas = this.FindName("Canvas") as System.Windows.Controls.Canvas;
+                if (canvas == null) return;
+                var tg = canvas.RenderTransform as System.Windows.Media.TransformGroup;
+                if (tg == null) return;
+                var scale = tg.Children[0] as System.Windows.Media.ScaleTransform;
+                var translate = tg.Children[1] as System.Windows.Media.TranslateTransform;
+                if (scale == null || translate == null) return;
+
+                var mousePos = e.GetPosition(canvas);
+                double zoom = e.Delta > 0 ? ZoomFactor : (1.0 / ZoomFactor);
+
+                double newScale = Math.Max(MinScale, Math.Min(MaxScale, _currentScale * zoom));
+                zoom = newScale / _currentScale; // clamp 後的實際倍率
+                _currentScale = newScale;
+
+                // 以滑鼠位置為中心縮放（保持滑鼠下的內容固定）
+                translate.X = (translate.X - mousePos.X) * zoom + mousePos.X;
+                translate.Y = (translate.Y - mousePos.Y) * zoom + mousePos.Y;
+                scale.ScaleX = _currentScale;
+                scale.ScaleY = _currentScale;
+
+                e.Handled = true;
+            }
+            catch { }
+        }
+
+        private void OnMouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            try
+            {
+                if (e.ChangedButton == System.Windows.Input.MouseButton.Middle)
+                {
+                    _lastPanPoint = e.GetPosition(this);
+                    this.Cursor = System.Windows.Input.Cursors.SizeAll;
+                    this.CaptureMouse();
+                }
+            }
+            catch { }
+        }
+
+        private void OnMouseMove(object sender, System.Windows.Input.MouseEventArgs e)
+        {
+            try
+            {
+                if (_lastPanPoint.HasValue && e.MiddleButton == System.Windows.Input.MouseButtonState.Pressed)
+                {
+                    var canvas = this.FindName("Canvas") as System.Windows.Controls.Canvas;
+                    if (canvas == null) return;
+                    var tg = canvas.RenderTransform as System.Windows.Media.TransformGroup;
+                    if (tg == null) return;
+                    var translate = tg.Children[1] as System.Windows.Media.TranslateTransform;
+                    if (translate == null) return;
+
+                    var pos = e.GetPosition(this);
+                    var dx = pos.X - _lastPanPoint.Value.X;
+                    var dy = pos.Y - _lastPanPoint.Value.Y;
+                    _lastPanPoint = pos;
+
+                    translate.X += dx;
+                    translate.Y += dy;
+                }
+            }
+            catch { }
+        }
+
+        private void OnMouseUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            try
+            {
+                if (e.ChangedButton == System.Windows.Input.MouseButton.Middle)
+                {
+                    _lastPanPoint = null;
+                    this.Cursor = System.Windows.Input.Cursors.Arrow;
+                    this.ReleaseMouseCapture();
+                }
+            }
+            catch { }
+        }
+
+        private void ResetView_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var canvas = this.FindName("Canvas") as System.Windows.Controls.Canvas;
+                if (canvas != null)
+                {
+                    var tg = canvas.RenderTransform as System.Windows.Media.TransformGroup;
+                    if (tg != null)
+                    {
+                        if (tg.Children.Count >= 2 && tg.Children[0] is System.Windows.Media.ScaleTransform sc && tg.Children[1] is System.Windows.Media.TranslateTransform tt)
+                        {
+                            _currentScale = 1.0;
+                            sc.ScaleX = sc.ScaleY = 1.0;
+                            tt.X = tt.Y = 0.0;
+                        }
+                    }
+                }
+
+                if (this.DataContext is SchematicViewModel vm)
+                {
+                    vm.RefitToCanvas();
+                }
+            }
+            catch { }
+        }
+
+        private void Relayout_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                // 先重置縮放/平移，避免視覺干擾
+                var canvas = this.FindName("Canvas") as System.Windows.Controls.Canvas;
+                if (canvas != null)
+                {
+                    var tg = canvas.RenderTransform as System.Windows.Media.TransformGroup;
+                    if (tg != null)
+                    {
+                        if (tg.Children.Count >= 2 && tg.Children[0] is System.Windows.Media.ScaleTransform sc && tg.Children[1] is System.Windows.Media.TranslateTransform tt)
+                        {
+                            _currentScale = 1.0;
+                            sc.ScaleX = sc.ScaleY = 1.0;
+                            tt.X = tt.Y = 0.0;
+                        }
+                    }
+                }
+
+                if (this.DataContext is SchematicViewModel vm)
+                {
+                    vm.Relayout();
                 }
             }
             catch { }

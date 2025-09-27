@@ -1,0 +1,23 @@
+<Window x:Class="IFC_Viewer_00.Views.PlaneSelectionDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="選擇投影平面" Height="200" Width="300"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <TextBlock Text="請選擇投影平面：" FontWeight="Bold" />
+        <StackPanel Grid.Row="1" Margin="0,12,0,12">
+            <RadioButton Content="XY" GroupName="Plane" IsChecked="True" Tag="XY"/> 
+            <RadioButton Content="XZ" GroupName="Plane" Tag="XZ"/>
+            <RadioButton Content="YZ" GroupName="Plane" Tag="YZ"/>
+        </StackPanel>
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" >
+            <Button Width="72" Margin="0,0,8,0" IsDefault="True" Click="Ok_Click">確定</Button>
+            <Button Width="72" IsCancel="True">取消</Button>
+        </StackPanel>
+    </Grid>
+</Window>

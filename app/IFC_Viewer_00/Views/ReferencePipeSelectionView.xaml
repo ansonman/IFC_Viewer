@@ -1,0 +1,11 @@
+<Window x:Class="IFC_Viewer_00.Views.ReferencePipeSelectionView"
+		xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+		xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+		Title="參考管段選擇" Height="200" Width="360">
+	<Grid Margin="12">
+		<StackPanel>
+			<TextBlock Text="此視窗為保留視圖 (未使用)。"/>
+			<TextBlock Text="若不需要，之後可移除此檔案。" Margin="0,6,0,0"/>
+		</StackPanel>
+	</Grid>
+</Window>

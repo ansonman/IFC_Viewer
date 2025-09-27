@@ -12,8 +12,13 @@
     - IViewer3DService.cs: 3D 控制抽象介面（highlight、isolate、hide、hit test、show all 等）
     - StrongWindowsUiViewer3DService.cs: 面向 xBIM WindowsUI (DrawingControl3D) 的強型別/反射整合；多選相容、UI 刷新、診斷
     - WindowsUiViewer3DService.cs: 反射為主的輕量備援服務
+    - SchematicService.cs: 從 IFC 模型萃取管線拓撲（僅 IfcRelConnectsPorts 建邊），回傳 SchematicData
+    - MockSchematicService.cs: 臨時用原理圖假資料（6 節點 / 5 邊），供前端先行開發
   - Models/
-    - SpatialNode.cs 等：TreeView 使用的樹節點模型
+    - SpatialNode.cs：TreeView 使用的樹節點模型
+    - SchematicNode.cs：原理圖節點（Id/Name/IfcType/Position3D/Position2D/Entity）
+    - SchematicEdge.cs：原理圖邊（Id/StartNodeId/EndNodeId/StartNode/EndNode/Entity/IsInferred）
+    - SchematicData.cs：原理圖資料封裝（Nodes/Edges）
   - Diagnostics/
     - viewer3d.log（輸出）：啟動、控制面狀態、選取/隔離/隱藏操作等追蹤
 
@@ -47,9 +52,19 @@
 - SelectionService
   - 儲存目前選取與來源，提供事件 SelectionChanged；避免 TreeView 與 3D 之間的重複觸發
 
+- SchematicService
+  - 解析目標元素型別（PipeSegment/PipeFitting/FlowTerminal/Valve）建立節點，並以 HasPorts 建立 Port→Node 對應
+  - 遍歷 IfcRelConnectsPorts 建立邊，並在邊上填入 Start/End NodeId 與參照
+  - 將元素 LocalPlacement 之 XYZ 投影為 Position2D（XY）供前端初始位置使用
+  - 若模型中沒有任何 IfcRelConnectsPorts，回傳只有節點、空邊集合的 SchematicData
+
+- MockSchematicService
+  - 回傳固定 6 節點/5 邊資料，`Position2D` 已離散分布，便於前端先行畫面驗證
+
 ## 重要約定
 
 - 優先以 Label 進行 3D 高亮（通用性最佳）
 - 任何集合寫入後僅做 InvalidateVisual（避免同步 UpdateLayout）確保可見與順暢
 - 不同版本 API 名稱不一，皆以反射尋找多組候選名稱，並保留日誌
+ - 原理圖拓撲遵循「Ports-only」SOP：不做幾何鄰近推斷；若無 Ports 關係，僅顯示節點
 

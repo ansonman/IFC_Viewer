@@ -12,6 +12,9 @@ using System.Linq;
 using System.Collections.Specialized;
 using System.Windows.Threading;
 using System.Diagnostics;
+using System.Windows;
+using System.Windows.Media.Media3D;
+using IFC_Viewer_00.Views;
 
 namespace IFC_Viewer_00.ViewModels
 {
@@ -49,6 +52,12 @@ namespace IFC_Viewer_00.ViewModels
         public ObservableCollection<SpatialNode> SelectedNodes { get; } = new();
 
         public RelayCommand OpenFileCommand { get; }
+    public RelayCommand GenerateSchematicCommand { get; }
+    public RelayCommand GenerateASSchematicCommand { get; }
+    public RelayCommand GenerateSchematicV1Command { get; }
+    public RelayCommand GeneratePipeAxesCommand { get; }
+    public RelayCommand ShowPipeOverlay3DCommand { get; }
+    public RelayCommand ClearOverlay3DCommand { get; }
 
         public MainViewModel() : this(new StubViewer3DService(), new SelectionService()) { }
 
@@ -57,6 +66,12 @@ namespace IFC_Viewer_00.ViewModels
             _viewer3D = viewer3D;
             _selection = selectionService ?? new SelectionService();
             OpenFileCommand = new RelayCommand(async () => await OnOpenFileAsync());
+            GenerateSchematicCommand = new RelayCommand(async () => await OnGenerateSchematicAsync());
+            GenerateASSchematicCommand = new RelayCommand(async () => await OnGenerateASSchematicAsync());
+            GenerateSchematicV1Command = new RelayCommand(async () => await OnGenerateSchematicV1Async());
+            GeneratePipeAxesCommand = new RelayCommand(async () => await OnGeneratePipeAxesAsync());
+            ShowPipeOverlay3DCommand = new RelayCommand(async () => await OnShowPipeOverlay3DAsync());
+            ClearOverlay3DCommand = new RelayCommand(() => _viewer3D.ClearOverlay());
 
             IsolateSelectionCommand = new RelayCommand(OnIsolateSelection);
             HideSelectionCommand = new RelayCommand(OnHideSelection);
@@ -216,6 +231,267 @@ namespace IFC_Viewer_00.ViewModels
             Model = loadedModel; // 觸發 OnModelChanged → SetModel/ResetCamera/BuildHierarchy
             old?.Dispose();
             StatusMessage = "模型載入成功！";
+        }
+
+        // Sprint 2/3：系統優先的原理圖生成與顯示
+        private async Task OnGenerateSchematicAsync()
+        {
+            try
+            {
+                if (Model == null)
+                {
+                    StatusMessage = "尚未載入模型";
+                    MessageBox.Show("尚未載入模型", "原理圖", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                var service = new SchematicService();
+                var list = await service.GenerateFromSystemsAsync(Model);
+                if (list == null || list.Count == 0)
+                {
+                    MessageBox.Show("未在模型中找到可用的管線系統。", "原理圖", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                SchematicData selected;
+                if (list.Count == 1)
+                {
+                    selected = list[0];
+                }
+                else
+                {
+                    var dlg = new SystemSelectionDialog(list) { Owner = Application.Current?.Windows.OfType<Window>().FirstOrDefault(w => w.IsActive) };
+                    var ok = dlg.ShowDialog();
+                    if (ok != true || dlg.SelectedData == null) return;
+                    selected = dlg.SelectedData;
+                }
+
+                // 顯示視窗
+                     var svm = new IFC_Viewer_00.ViewModels.SchematicViewModel(service, _selection);
+                         await svm.LoadFromDataAsync(selected);
+                var win = new SchematicView { DataContext = svm };
+                if (!string.IsNullOrWhiteSpace(selected.SystemName)) win.Title = selected.SystemName;
+                win.Show();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"原理圖產生失敗: {ex.Message}", "原理圖", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // 新增：AS原理圖工作流程入口
+        private Task OnGenerateASSchematicAsync()
+        {
+            try
+            {
+                if (Model == null)
+                {
+                    StatusMessage = "尚未載入模型";
+                    MessageBox.Show("尚未載入模型", "AS原理圖", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return Task.CompletedTask;
+                }
+
+                // 開啟非模式選擇面板，交由面板與 SelectionService 引導使用者在 3D 中選兩段管件
+                var vm = new IFC_Viewer_00.ViewModels.SelectSegmentsForASSchematicViewModel(Model, _selection);
+                var win = new IFC_Viewer_00.Views.SelectSegmentsForASSchematicWindow { DataContext = vm };
+                win.Owner = Application.Current?.Windows.OfType<Window>().FirstOrDefault(w => w.IsActive);
+                win.Show();
+
+                // 非同步等待 ViewModel 完成選擇並產出結果（不阻塞 UI）
+                _ = vm.WhenDone.ContinueWith(t =>
+                {
+                    try
+                    {
+                        var result = t.Result;
+                        if (result == null) return;
+                        Application.Current?.Dispatcher.Invoke(async () =>
+                        {
+                            var service = new SchematicService();
+                            // 直接載入已投影的點資料
+                            var svm = new IFC_Viewer_00.ViewModels.SchematicViewModel(service, _selection);
+                            await svm.LoadProjectedAsync(result);
+                            var view = new IFC_Viewer_00.Views.SchematicView { DataContext = svm };
+                            if (!string.IsNullOrWhiteSpace(result.SystemName)) view.Title = $"AS原理圖 - {result.SystemName}";
+                            view.Show();
+                        });
+                    }
+                    catch { }
+                });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"AS原理圖流程啟動失敗: {ex.Message}", "AS原理圖", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            return Task.CompletedTask;
+        }
+
+        // 新增：V1 平面投影（所有系統 Ports → 2D 點）
+        private async Task OnGenerateSchematicV1Async()
+        {
+            try
+            {
+                if (Model == null)
+                {
+                    StatusMessage = "尚未載入模型";
+                    MessageBox.Show("尚未載入模型", "AS原理圖V1", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                var service = new SchematicService();
+                var systems = Model.Instances.OfType<IIfcSystem>().ToList();
+                if (systems.Count == 0)
+                {
+                    MessageBox.Show("模型中沒有 IfcSystem。", "AS原理圖V1", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                // 系統選擇對話框（多選）
+                var pick = new SystemsPickDialog(systems) { Owner = Application.Current?.Windows.OfType<Window>().FirstOrDefault(w => w.IsActive) };
+                if (pick.ShowDialog() != true || pick.SelectedSystems.Count == 0) return;
+
+                // 平面選擇
+                var dlg = new PlaneSelectionDialog { Owner = Application.Current?.Windows.OfType<Window>().FirstOrDefault(w => w.IsActive) };
+                if (dlg.ShowDialog() != true) return;
+                string plane = dlg.SelectedPlane;
+
+                var all3D = new System.Collections.Generic.List<Point3D>();
+                var metaList = new System.Collections.Generic.List<(int? portLabel,string? name,string? hostType,int? hostLabel,bool isFromPipeSegment)>();
+                var svm = new IFC_Viewer_00.ViewModels.SchematicViewModel(service, _selection)
+                {
+                    CanvasWidth = 1200,
+                    CanvasHeight = 800,
+                    CanvasPadding = 40
+                };
+                svm.AddLog($"選擇平面: {plane}");
+                foreach (var sys in pick.SelectedSystems)
+                {
+                    svm.AddLog($"處理系統: {IfcStringHelper.FromValue(sys.Name) ?? IfcStringHelper.FromValue(sys.GlobalId)}");
+                    var pts3D = await service.GetAllPortCoordinatesAsync(Model, sys);
+                    var stats = service.LastPortExtractionStats;
+                    if (pts3D.Count == 0)
+                    {
+                        svm.AddLog("  -> 無 Port (HasPorts/Nested/Nests Fallback 全部失敗)");
+                        continue;
+                    }
+                    svm.AddLog($"  -> Ports: distinct={stats?.DistinctPorts} viaHasPorts={stats?.ViaHasPorts} viaNested={stats?.ViaNested} viaFallback={stats?.ViaFallback}");
+                    // 對應 LastPortDetails（順序：distinctPorts 的順序）
+                    var portDetails = service.LastPortDetails;
+                    foreach (var p in pts3D) all3D.Add(new Point3D(p.X, p.Y, p.Z));
+                    // 與 all3D 同序 push meta
+                    if (portDetails != null)
+                    {
+                        foreach (var d in portDetails)
+                        {
+                            bool isPipe = !string.IsNullOrWhiteSpace(d.HostType) && d.HostType.IndexOf("pipesegment", StringComparison.OrdinalIgnoreCase) >= 0;
+                            metaList.Add((d.PortLabel, d.PortName, d.HostType, d.HostLabel, isPipe));
+                            svm.AddLog($"    Port L{d.PortLabel} '{d.PortName}' Host=({d.HostLabel}:{d.HostType}) Src={d.SourcePath} XYZ=({d.X:0.##},{d.Y:0.##},{d.Z:0.##})");
+                        }
+                    }
+                }
+                if (all3D.Count == 0)
+                {
+                    MessageBox.Show("所選系統皆無可用 DistributionPort。", "AS原理圖V1", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                // 使用新 API：從 3D 投影 → 2D（支援退化檢測與軸向翻轉）
+                await svm.LoadPointsFrom3DAsync(all3D, plane, metaList, flipX: false, flipY: true, tryBestIfDegenerate: true);
+                svm.AddLog($"總計投影點數: {all3D.Count}");
+                var view = new SchematicView { DataContext = svm };
+                view.Title = $"AS原理圖V1 - {pick.SelectedSystems.Count} 系統 Ports ({plane})";
+                view.Show();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"AS原理圖V1 生成失敗: {ex.Message}", "AS原理圖V1", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // 新增：生成 PipeSegment 軸線線圖（無 Port 模型也可）
+        private async Task OnGeneratePipeAxesAsync()
+        {
+            try
+            {
+                if (Model == null)
+                {
+                    StatusMessage = "尚未載入模型";
+                    MessageBox.Show("尚未載入模型", "PipeAxis", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                // 重用已有 PlaneSelectionDialog (若存在)；若無則預設 XY
+                string plane = "XY";
+                try
+                {
+                    var dlg = new PlaneSelectionDialog { Owner = Application.Current?.Windows.OfType<Window>().FirstOrDefault(w => w.IsActive) };
+                    if (dlg.ShowDialog() == true) plane = dlg.SelectedPlane;
+                }
+                catch { }
+
+                var service = new SchematicService();
+                var data = await service.GeneratePipeAxesAsync(Model, plane, flipY: true);
+                if (data.Nodes.Count == 0)
+                {
+                    MessageBox.Show("模型中沒有可解析的 IfcPipeSegment 幾何。", "PipeAxis", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                // 在 3D 檢視器疊加中線與端點（使用絕對 3D 座標）
+                try
+                {
+                    var axes = data.Edges
+                        .Where(e => e.StartNode != null && e.EndNode != null)
+                        .Select(e => (Start: new Point3D(e.StartNode.Position3D.X, e.StartNode.Position3D.Y, e.StartNode.Position3D.Z),
+                                      End: new Point3D(e.EndNode.Position3D.X, e.EndNode.Position3D.Y, e.EndNode.Position3D.Z)))
+                        .ToList();
+                    var endpoints = data.Nodes.Select(n => new Point3D(n.Position3D.X, n.Position3D.Y, n.Position3D.Z)).ToList();
+                    _viewer3D.ShowOverlayPipeAxes(axes, endpoints, lineColor: System.Windows.Media.Colors.DeepSkyBlue, lineThickness: 2.0, pointColor: System.Windows.Media.Colors.Black, pointSize: 3.0);
+                }
+                catch { }
+                var svm = new IFC_Viewer_00.ViewModels.SchematicViewModel(service, _selection)
+                {
+                    CanvasWidth = 1200,
+                    CanvasHeight = 800,
+                    CanvasPadding = 40
+                };
+                await svm.LoadPipeAxesAsync(data);
+                svm.AddLog($"生成管段軸線：Segments={data.Edges.Count} Plane={plane}");
+                var view = new SchematicView { DataContext = svm };
+                view.Title = $"PipeAxes - {data.Edges.Count} 段 ({plane})";
+                view.Show();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"PipeAxes 生成失敗: {ex.Message}", "PipeAxis", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // 單獨顯示 3D 中線/端點 Overlay（不開啟 2D 視圖）
+        private async Task OnShowPipeOverlay3DAsync()
+        {
+            try
+            {
+                if (Model == null)
+                {
+                    StatusMessage = "尚未載入模型";
+                    MessageBox.Show("尚未載入模型", "3D Overlay", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                var service = new SchematicService();
+                // 平面參數僅影響 2D，不影響 3D；這裡任意給值
+                var data = await service.GeneratePipeAxesAsync(Model, "XY", flipY: false);
+                if (data.Nodes.Count == 0)
+                {
+                    MessageBox.Show("模型中沒有可解析的 IfcPipeSegment 幾何。", "3D Overlay", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                var axes = data.Edges
+                    .Where(e => e.StartNode != null && e.EndNode != null)
+                    .Select(e => (Start: new Point3D(e.StartNode.Position3D.X, e.StartNode.Position3D.Y, e.StartNode.Position3D.Z),
+                                  End: new Point3D(e.EndNode.Position3D.X, e.EndNode.Position3D.Y, e.EndNode.Position3D.Z)))
+                    .ToList();
+                var endpoints = data.Nodes.Select(n => new Point3D(n.Position3D.X, n.Position3D.Y, n.Position3D.Z)).ToList();
+                _viewer3D.ShowOverlayPipeAxes(axes, endpoints, lineColor: System.Windows.Media.Colors.DeepSkyBlue, lineThickness: 2.0, pointColor: System.Windows.Media.Colors.Black, pointSize: 3.0);
+                StatusMessage = $"3D Overlay: 中線 {axes.Count} 條，端點 {endpoints.Count} 個";
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"3D Overlay 失敗: {ex.Message}", "3D Overlay", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         // 階段 4/6：模型變更通知，載入空間結構樹

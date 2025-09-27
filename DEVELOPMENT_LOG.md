@@ -1,17 +1,124 @@
 # DEVELOPMENT LOG
 
-## 2025-09-21 修復：TreeView → 3D 高亮回歸與多選相容性
+## 2025-09-24：V1 手動平面投影、Port 詳細診斷、顏色修復
 
-- 修復重點：
-  - `Services/StrongWindowsUiViewer3DService.cs` 新增對 `Selection: EntitySelection`（非純集合）的專用處理，嘗試以其內部屬性/方法填入多選；
-  - 若控制版本不支援多選，退回 `SelectedEntity` 單選，確保至少單選可視；
-  - 清空選取時兼顧清除 Selection 與 `SelectedEntity = null`，並以 InvalidateVisual + UpdateLayout 刷新；
-  - 增補診斷日誌，包含 `[Service] HighlightEntities(labels) ...`、`[StrongViewer] Using member for selection: ...`、`Fallback SelectedEntity assigned ...`。
-- 驗證建議：
-  1) TreeView 單選一個元素 → 3D 應高亮；
-  2) TreeView Ctrl 多選多個元素 → 3D 盡可能多選；若控制版本不支援則至少第一個可見；
-  3) TreeView 點空白 → 3D 高亮清空。
-- Build：PASS（仍有 NU1701 相容性警告，來源於 HelixToolkit.Wpf 與 Xbim.* 封裝對 net8.0-windows 的還原）。
+新增 / 調整：
+- V1 流程：改為「使用者手動選擇平面 (XY/XZ/YZ)」+「多系統可複選」+「僅顯示 Ports 點雲（不畫邊線）」的資料檢視模式。
+- Ports 抽取三層策略：HasPorts → RelNests (Nested) → 全模型掃描 (Fallback)；統計欄位：viaHasPorts / viaNested / viaFallback。
+- `SchematicService`：
+  - 新增 `PortDetail` record（Label, Name, HostLabel, HostIfcType, Source, RawXYZ, Projected, HostName）。
+  - `LastPortDetails` 集合用於 UI 顯示與後續匯出。
+  - Host 解析：優先 `ContainedIn` / DistributionElement；缺失時標記為 Fallback（TODO：反向追 RelNests）。
+- ViewModel：
+  - 多系統迴圈執行後將每系統的 PortDetail 逐行寫入日誌區域（包含來源層級與投影座標）。
+  - `LoadPointsAsync` 由原本「Label → Meta 字典」改為「index-aligned meta list」。
+- 顏色規則：
+  - 黑色：宿主 IfcPipeSegment（視為實際管段端點）
+  - 紅色：其它宿主或 Fallback Port
+  - 未來擴充：按 Valve/Fitting/Terminal 使用不同色盤。
+- Tooltip：顯示 Port 名稱 / Label / Host 型別 / Host Label / 是否 PipeSegment。
+
+Bug 修復（全部紅點）：
+- 問題：所有節點顯示紅色，`IsFromPipeSegment` 判斷失效。
+- 根因：渲染節點順序與以 PortLabel 索引的 meta 映射不同步 → 取錯 meta。
+- 修復：改用「加入順序對齊」(`metaList[i]`)；生成 meta 時與點集合 push 順序一致。
+
+驗證：
+- Build 成功（僅 NU1701 警告）。
+- 手動檢查：含 PipeSegment 與非 PipeSegment 混合系統 → 顯示黑/紅點交錯；日誌顯示三層來源統計與每點詳細。 
+
+待辦（後續建議）：
+1. 反向 RelNests 宿主解析，降低紅點（Fallback）比例。
+2. 匯出 PortDetail (CSV/JSON) 與批次多系統合併報告。
+3. 圖例 (Legend) 與切換「只顯示管段端點」。
+4. 重新投影（平面切換）不重查 IFC。
+5. 疊點標示（重合計數 / jitter）。
+6. Host 類型多色與圖示。
+
+品質：
+- Build：PASS。
+- 已知：部分嵌套模型因宿主缺失被標為 Fallback → 導致過度紅點；屬於資料解析層待強化。
+
+---
+
+## 2025-09-23：AS 原理圖（兩段管件）強化與文件同步
+
+完成事項：
+- 後端：
+  - `SchematicService` 的 AS 流程以兩段 `IfcPipeSegment` 推導最佳 2D 投影面（最小跨度軸剔除），並以 `IfcRelConnectsPorts` 建立邊。
+  - Ports 蒐集採三層回退：系統 AssignsToGroup → 系統成員 HasPorts → 全模型 `IfcDistributionPort` 保底；邊在系統內先匹配，不足時遍歷全模型 `IfcRelConnectsPorts`。
+  - 改善 Port 取點：優先使用 Port 本身的放置（LocalPlacement），無則退回宿主產品位置。
+  - 新增 Trace 診斷：輸出蒐集與配對統計，利於現場驗證。
+- 前端：
+  - `SchematicView.xaml` 調整節點/邊樣式（6px 黑點、1.5px 黑線），邊 ItemsControl 座標直接綁定端點 NodeView。
+  - 視圖互動：滾輪縮放、中鍵平移、「重置視圖」、「重新布局」；`LoadData` 採 800x600、padding 20 的 Fit-to-Canvas。
+- 文件：更新 `README.md`、`Debug Report.md`、`FILE_ORG.md`、`SchematicModule_Report.md`，補充 AS 流程、最佳投影、Ports-only 策略與驗收清單。
+
+品質狀態：
+- Build：成功；僅 NU1701 相容性警告（xBIM/HelixToolkit 面向 .NET Framework）。
+- 待驗收：以 `sample/Sample_pipe.ifc` 啟動 AS 流程，預期可見 Ports 黑點與部分黑線；若無邊，UI 顯示提示 Banner，並可於 Trace 查看統計。
+
+## 2025-09-22：Schematic 視圖互動與座標適配完成（迭代）
+
+完成事項：
+- 視圖互動：
+  - `SchematicView.xaml` 在 Canvas 套用 `ScaleTransform + TranslateTransform`，支援滑鼠滾輪縮放（以游標為中心）與中鍵拖曳平移。
+  - 工具列新增「重置視圖」與「重新布局」按鈕：重置會清零變換並呼叫 `ViewModel.RefitToCanvas()`；重新布局會執行力導向佈局並自動 Refit。
+- 邊線繪製：
+  - 邊線 ItemsControl 改綁 EdgeView 的節點視圖座標（`Start.X/Start.Y`、`End.X/End.Y`），分層於節點之下顯示，避免覆蓋問題。
+- 座標適配（Fit-to-Canvas）：
+  - 一般方法：`SchematicViewModel.FitToCanvas()` 依 `CanvasWidth/CanvasHeight/CanvasPadding`（預設 1600/1000/40）計算縮放與偏移，更新 NodeView `X/Y`。
+  - 載入資料：`LoadData(SchematicData)` 依需求使用固定 800x600、padding 20 的演算法，先更新 `Node.Position2D`，再同步 NodeView `X/Y` 與建立 EdgeView。
+  - 投影選面更新：以「最小跨度軸剔除」取代「面積最大平面」。計算 X/Y/Z 三軸跨度（max-min），捨棄最小者，以其餘兩軸形成投影面；平手時偏好 XY → XZ → YZ。此策略同時應用於 `FitToCanvasBestProjection(...)` 與 `BuildFromData(...)` 初始種子平面，對細長管線更穩定。
+
+其他：
+- 後端 `SchematicService.GenerateFromSystemsAsync` 已強化系統成員匹配與 Trace 彙總。修正 `IfcGloballyUniqueId` 取值方式（避免 null-conditional 導致的編譯錯誤）。
+
+建置與驗證：
+- Build：成功；維持 NU1701 警告（xBIM/HelixToolkit 為 .NET Framework 封裝，相容還原）。
+- 注意：若執行中造成 `IFC_Viewer_00.exe` 被鎖定，會出現 MSB3026/MSB3027 失敗；請關閉執行中的應用後重試建置。
+
+文件同步：
+- README/FILE_ORG/SchematicModule_Report/Debug Report 已更新，加入縮放/平移、重置/重新布局、Fit-to-Canvas 與邊線綁定調整。
+
+## 2025-09-22：SOP 2.0（系統優先）整合與邊線繪製
+
+完成事項：
+- Models：
+  - `SchematicNode` 新增 `Edges`（雙向關聯相鄰邊）。
+  - `SchematicEdge` 新增 `Connection`（指向 `IfcRelConnectsPorts`）。
+  - `SchematicData` 新增 `SystemName`、`SystemEntity`。
+- Services：
+  - `SchematicService.GenerateFromSystemsAsync(IStepModel)`：先發現系統 → 依系統建圖（Ports-only），回傳多組 `SchematicData`。
+- ViewModel/UI：
+  - `MainViewModel.GenerateSchematicCommand`：呼叫前述方法；多系統時彈出 `SystemSelectionDialog`；開啟 `SchematicView` 並以系統名稱命名視窗標題。
+  - `SchematicView.xaml`：在節點 ItemsControl 之後新增第二個 ItemsControl 繪製邊線（`<Line>` 綁定 `StartNode.Position2D` 與 `EndNode.Position2D`；目前 `Stroke=Gray`、`StrokeThickness=1`，便於除錯觀察；需要置底時可調整區塊順序）。
+  - `SchematicView.xaml`：當 `Edges.Count == 0` 顯示提示 Banner（無 Ports 僅節點）。
+
+建置與驗證：
+- `dotnet build app/IFC_Viewer_00/IFC_Viewer_00.csproj` 成功；僅 NU1701 警告（沿用既有套件相容還原）。
+
+後續建議：
+- 改善系統選擇對話框（顯示成員數、類型分佈；允許多選並開多視窗）。
+- 加入邊線點擊綁定與 `IsInferred` 樣式（虛線/不同色）。
+
+## 2025-09-21：Schematic 後端加速（任務 1/2 完成）
+
+完成項目：
+- Models：為 `SchematicNode` 新增 `Position2D`；為 `SchematicEdge` 新增 `StartNodeId`/`EndNodeId`。
+- Mock 服務：`Services/MockSchematicService.cs`，回傳 6 節點/5 邊的硬編碼資料，節點 `Position2D` 已分散。
+- 核心服務：`Services/SchematicService.cs` 收斂為 SOP（Ports-only）。
+  - 僅針對 `IfcPipeSegment`/`IfcPipeFitting`/`IfcFlowTerminal`/`IfcValve` 建立節點。
+  - 僅使用 `IfcRelConnectsPorts` 建立邊；若模型無任何該關係，回傳只有節點、空邊集合。
+  - 在建立節點時同步填入 `Position3D` 與 `Position2D`（XY 投影）。
+- 文件更新：`README.md`、`docs/file_org.md`、`docs/schematicmodule_report.md`、`docs/debug_report.md` 對齊 SOP 與 Mock。
+
+建置：
+- `dotnet build app/IFC_Viewer_00/IFC_Viewer_00.csproj` 成功（仍有 NU1701 相容性警告，可接受）。
+
+下一步：
+- 若需 `GenerateTopologyAsync(IStepModel)` 明確簽名，新增 wrapper 並驗證 WPF 設計期編譯穩定性。
+- UI 端加入切換資料來源（Mock/Real）入口，便於前端可視化開發。
 
 ## 2025-09-21 文件同步與多選功能彙整
 

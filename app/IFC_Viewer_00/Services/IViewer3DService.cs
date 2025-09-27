@@ -1,6 +1,8 @@
 using Xbim.Ifc;
 using Xbim.Ifc4.Interfaces;
 using Xbim.Common;
+using System.Windows.Media;
+using System.Windows.Media.Media3D;
 
 namespace IFC_Viewer_00.Services
 {
@@ -27,5 +29,17 @@ namespace IFC_Viewer_00.Services
         void ShowAll();
 
         IIfcObject? HitTest(double x, double y);
+
+        // 3D Overlay：顯示/清除管段中線與端點（以世界座標渲染於 HelixViewport3D）
+        void ShowOverlayPipeAxes(
+            IEnumerable<(Point3D Start, Point3D End)> axes,
+            IEnumerable<Point3D>? endpoints = null,
+            Color? lineColor = null,
+            double lineThickness = 2.0,
+            Color? pointColor = null,
+            double pointSize = 3.0
+        );
+
+        void ClearOverlay();
     }
 }

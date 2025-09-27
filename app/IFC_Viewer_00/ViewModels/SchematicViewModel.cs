@@ -1,9 +1,12 @@
 using System;
 using System.Collections.ObjectModel;
+using System.Collections.Generic;
+using System.ComponentModel;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows;
 using Xbim.Common;
 using IFC_Viewer_00.Models;
 using IFC_Viewer_00.Services;
@@ -16,15 +19,39 @@ namespace IFC_Viewer_00.ViewModels
 
         public ObservableCollection<SchematicNodeView> Nodes { get; } = new();
         public ObservableCollection<SchematicEdgeView> Edges { get; } = new();
+        // V1: 日誌文字顯示
+        public ObservableCollection<string> Logs { get; } = new();
+
+        public void AddLog(string msg)
+        {
+            if (string.IsNullOrWhiteSpace(msg)) return;
+            if (Logs.Count > 500) Logs.Clear();
+            Logs.Add($"[{DateTime.Now:HH:mm:ss}] {msg}");
+        }
 
         public double Scale { get; set; } = 0.001; // 粗略縮放，將毫米→公尺（視模型而定）
+    // Canvas 尺寸與邊距（可由 View 綁定）
+    public double CanvasWidth { get; set; } = 1600;
+    public double CanvasHeight { get; set; } = 1000;
+    public double CanvasPadding { get; set; } = 40;
 
     // 點擊互動：由 Window/Owner 註冊，轉送到 3D 服務
         public event Action<IPersistEntity, bool>? RequestHighlight; // bool: 是否要求縮放
     private readonly ISelectionService? _selection;
 
-        public ICommand NodeClickCommand { get; }
-        public ICommand EdgeClickCommand { get; }
+    public ICommand NodeClickCommand { get; }
+    public ICommand EdgeClickCommand { get; }
+    // 視覺調整命令
+    public ICommand IncreaseNodeSizeCommand { get; }
+    public ICommand DecreaseNodeSizeCommand { get; }
+    public ICommand IncreaseLineWidthCommand { get; }
+    public ICommand DecreaseLineWidthCommand { get; }
+    public ICommand ToggleSnapCommand { get; }
+
+    // 視覺預設
+    private double _defaultNodeSize = 8.0; // px
+    private double _defaultEdgeThickness = 2.0; // px
+    public bool SnapEnabled { get; private set; } = true;
 
         public SchematicViewModel(SchematicService service, ISelectionService? selection = null)
         {
@@ -70,31 +97,398 @@ namespace IFC_Viewer_00.ViewModels
                     RequestHighlight?.Invoke(ev.Start.Node.Entity, !ctrl);
                 }
             });
+
+            IncreaseNodeSizeCommand = new SchematicCommand(_ => AdjustNodeSize(+1));
+            DecreaseNodeSizeCommand = new SchematicCommand(_ => AdjustNodeSize(-1));
+            IncreaseLineWidthCommand = new SchematicCommand(_ => AdjustLineWidth(+1));
+            DecreaseLineWidthCommand = new SchematicCommand(_ => AdjustLineWidth(-1));
+            ToggleSnapCommand = new SchematicCommand(_ =>
+            {
+                SnapEnabled = !SnapEnabled;
+                if (SnapEnabled) SnapToPixelGrid(Nodes);
+                LogVisualSettings();
+            });
         }
 
         public async Task LoadAsync(IModel model)
         {
             var data = await _service.GenerateTopologyAsync(model);
+            LoadData(data);
+        }
+
+        public Task LoadFromDataAsync(SchematicData data)
+        {
+            LoadData(data);
+            return Task.CompletedTask;
+        }
+
+        // 新增：載入管段軸線結果（節點+邊），並套用 FitToCanvas
+        public Task LoadPipeAxesAsync(SchematicData data)
+        {
+            if (data == null) return Task.CompletedTask;
+            Nodes.Clear();
+            Edges.Clear();
+            // 直接將 data.Nodes 轉成 NodeView
+            var map = new Dictionary<SchematicNode, SchematicNodeView>();
+            foreach (var n in data.Nodes)
+            {
+                var nv = new SchematicNodeView
+                {
+                    Node = n,
+                    X = n.Position2D.X,
+                    Y = n.Position2D.Y,
+                    NodeBrush = Brushes.Black, // 管段端點以黑色表示
+                    NodeSize = _defaultNodeSize
+                };
+                map[n] = nv;
+                Nodes.Add(nv);
+            }
+            foreach (var e in data.Edges)
+            {
+                if (e.StartNode == null || e.EndNode == null) continue;
+                if (!map.TryGetValue(e.StartNode, out var s) || !map.TryGetValue(e.EndNode, out var t)) continue;
+                var ev = new SchematicEdgeView
+                {
+                    Edge = e,
+                    Start = s,
+                    End = t,
+                    EdgeBrush = Brushes.DarkSlateGray,
+                    Thickness = _defaultEdgeThickness
+                };
+                Edges.Add(ev);
+            }
+            FitToCanvas(Nodes, CanvasWidth, CanvasHeight, CanvasPadding);
+            if (SnapEnabled) SnapToPixelGrid(Nodes);
+            // 關鍵：回寫新座標到 Node.Position2D，因 XAML 的 Line 綁定讀的是 Node.Position2D
+            foreach (var nv in Nodes)
+            {
+                nv.Node.Position2D = new System.Windows.Point(nv.X, nv.Y);
+            }
+            LogVisualSettings();
+            return Task.CompletedTask;
+        }
+
+        // V1：從 3D 點集合載入（指定投影平面，支援方向翻轉與退化平面自動建議）
+        public Task LoadPointsFrom3DAsync(IEnumerable<System.Windows.Media.Media3D.Point3D> points3D,
+            string plane,
+            IEnumerable<(int? portLabel, string? name, string? hostType, int? hostLabel, bool isFromPipeSegment)>? meta = null,
+            bool flipX = false,
+            bool flipY = true,
+            bool tryBestIfDegenerate = true)
+        {
+            if (points3D == null) return Task.CompletedTask;
+            var list3 = points3D.ToList();
+            if (list3.Count == 0) return Task.CompletedTask;
+
+            // 解析平面字串
+            ProjectionPlane pl = ProjectionPlane.XY;
+            var pstr = (plane ?? string.Empty).Trim().ToUpperInvariant();
+            if (pstr == "XZ") pl = ProjectionPlane.XZ; else if (pstr == "YZ") pl = ProjectionPlane.YZ; else pl = ProjectionPlane.XY;
+
+            // 投影 + 可選退化檢測
+            var projected = Project3DTo2D(list3, pl, flipX, flipY, tryBestIfDegenerate, out var finalPlane, out var wasDegenerate);
+            if (wasDegenerate)
+            {
+                AddLog($"[V1] 所選平面 {plane} 在資料上退化（跨度極小），已自動建議採用 {finalPlane}。");
+            }
+
+            // 使用既有載入流程（確保畫布適配一致）
+            return LoadPointsAsync(projected, meta);
+        }
+
+        // V1：僅載入 2D 點集合（無邊）
+        // points: 已投影後的 2D 座標
+        // meta: 與 points 同序的 Port 詳細資料 (index 對 index)，避免以 EntityLabel 當 key 造成落差
+        public Task LoadPointsAsync(IEnumerable<Point> points, IEnumerable<(int? portLabel,string? name,string? hostType,int? hostLabel,bool isFromPipeSegment)>? meta = null)
+        {
+            if (points == null) return Task.CompletedTask;
+            var list = points.ToList();
+            Nodes.Clear();
+            Edges.Clear();
+            int i = 0;
+            var metaList = meta?.ToList();
+            foreach (var p in list)
+            {
+                string name = $"P{i}";
+                string hostType = string.Empty;
+                bool isPipe = false;
+                int? hostLbl = null;
+                if (metaList != null && i < metaList.Count)
+                {
+                    var md = metaList[i];
+                    name = string.IsNullOrWhiteSpace(md.name) ? (md.portLabel?.ToString() ?? name) : md.name!;
+                    hostType = md.hostType ?? string.Empty;
+                    hostLbl = md.hostLabel;
+                    isPipe = md.isFromPipeSegment;
+                }
+                var node = new SchematicNode
+                {
+                    Id = $"P{i}",
+                    Name = name,
+                    IfcType = "Port",
+                    Position3D = new System.Windows.Media.Media3D.Point3D(p.X, p.Y, 0),
+                    Position2D = p,
+                    HostIfcType = hostType,
+                    HostLabel = hostLbl,
+                    IsFromPipeSegment = isPipe,
+                    PortLabel = metaList != null && i < metaList.Count ? metaList[i].portLabel : i
+                };
+                i++;
+                Nodes.Add(new SchematicNodeView
+                {
+                    Node = node,
+                    X = p.X,
+                    Y = p.Y,
+                    NodeBrush = isPipe ? System.Windows.Media.Brushes.Black : System.Windows.Media.Brushes.Red,
+                    NodeSize = _defaultNodeSize
+                });
+            }
+            // 適配畫布
+            FitToCanvas(Nodes, CanvasWidth, CanvasHeight, CanvasPadding);
+            if (SnapEnabled) SnapToPixelGrid(Nodes);
+            LogVisualSettings();
+            return Task.CompletedTask;
+        }
+
+        // 3D → 2D 投影與適配的核心（不直接改變 Nodes，由呼叫端決定後續流程）
+        // - plane: XY / XZ / YZ
+        // - flipX/flipY: 是否鏡像對應軸（通常建議 flipY=true 以符合 Canvas Y 向下）
+        // - tryBestIfDegenerate: 若在選定平面上寬或高的跨度過小，嘗試選擇跨度更大的平面
+        // 回傳：尚未做 FitToCanvas 的 2D 點（統一交給 LoadPointsAsync → FitToCanvas）
+        private IList<Point> Project3DTo2D(
+            IList<System.Windows.Media.Media3D.Point3D> pts,
+            ProjectionPlane plane,
+            bool flipX,
+            bool flipY,
+            bool tryBestIfDegenerate,
+            out string finalPlane,
+            out bool wasDegenerate)
+        {
+            wasDegenerate = false;
+
+            // 計算各軸跨度
+            double minX = pts.Min(p => p.X), maxX = pts.Max(p => p.X);
+            double minY = pts.Min(p => p.Y), maxY = pts.Max(p => p.Y);
+            double minZ = pts.Min(p => p.Z), maxZ = pts.Max(p => p.Z);
+            double rx = Math.Max(1e-12, maxX - minX);
+            double ry = Math.Max(1e-12, maxY - minY);
+            double rz = Math.Max(1e-12, maxZ - minZ);
+
+            // 若退化（寬或高極小），可改採兩軸跨度和最大的平面
+            bool IsDegenerate(ProjectionPlane pl)
+            {
+                return pl switch
+                {
+                    ProjectionPlane.XY => (rx < 1e-6 || ry < 1e-6),
+                    ProjectionPlane.XZ => (rx < 1e-6 || rz < 1e-6),
+                    _ => (ry < 1e-6 || rz < 1e-6),
+                };
+            }
+
+            if (tryBestIfDegenerate && IsDegenerate(plane))
+            {
+                wasDegenerate = true;
+                // 挑跨度和最大的二軸平面
+                double sXY = rx + ry, sXZ = rx + rz, sYZ = ry + rz;
+                if (sXY >= sXZ && sXY >= sYZ) plane = ProjectionPlane.XY;
+                else if (sXZ >= sXY && sXZ >= sYZ) plane = ProjectionPlane.XZ;
+                else plane = ProjectionPlane.YZ;
+            }
+            finalPlane = plane.ToString();
+
+            var raw2d = new List<Point>(pts.Count);
+            foreach (var p in pts)
+            {
+                double u, v;
+                switch (plane)
+                {
+                    case ProjectionPlane.XZ: u = p.X; v = p.Z; break;
+                    case ProjectionPlane.YZ: u = p.Y; v = p.Z; break;
+                    default: u = p.X; v = p.Y; break; // XY
+                }
+                if (flipX) u = -u;
+                if (flipY) v = -v; // Canvas Y 向下
+                raw2d.Add(new Point(u, v));
+            }
+            return raw2d;
+        }
+
+        // 已投影資料載入：保留既有 Position2D，僅做 FitToCanvas 與（必要時）同步回 Position2D
+        public Task LoadProjectedAsync(SchematicData data)
+        {
+            if (data == null) return Task.CompletedTask;
+
             Nodes.Clear();
             Edges.Clear();
 
-            // 建立 NodeView 並以簡單縮放投影 X/Y
-            // 為避免 Id 衝突，優先使用實體參照或 EntityLabel 作為 key
             var nodeMap = new Dictionary<object, SchematicNodeView>();
             foreach (var n in data.Nodes)
             {
                 object key = (object?)n.Entity ?? (object)n.Id;
                 if (nodeMap.ContainsKey(key))
                 {
-                    // 退而求其次：用組合鍵防止碰撞
                     key = (n.Entity != null) ? (object)$"{n.Entity.EntityLabel}:{n.Id}" : (object)$"dup:{n.Id}:{nodeMap.Count}";
                 }
                 var nv = new SchematicNodeView
                 {
                     Node = n,
-                    X = n.Position3D.X * Scale,
-                    Y = -n.Position3D.Y * Scale,
-                    NodeBrush = GetBrushByIfcType(n.IfcType)
+                    X = n.Position2D.X,
+                    Y = n.Position2D.Y,
+                    NodeBrush = GetBrushByIfcType(n.IfcType),
+                    NodeSize = _defaultNodeSize
+                };
+                nodeMap[key] = nv;
+            }
+            foreach (var nv in nodeMap.Values) Nodes.Add(nv);
+
+            foreach (var e in data.Edges)
+            {
+                if (e.StartNode == null || e.EndNode == null) continue;
+                var s = FindNodeView(nodeMap, e.StartNode);
+                var t = FindNodeView(nodeMap, e.EndNode);
+                if (s == null || t == null) continue;
+                var ev = new SchematicEdgeView
+                {
+                    Edge = e,
+                    Start = s,
+                    End = t,
+                    EdgeBrush = GetDarkerBrush(s.NodeBrush),
+                    Thickness = _defaultEdgeThickness
+                };
+                Edges.Add(ev);
+            }
+
+            // 僅做適配畫布
+            FitToCanvas(Nodes, CanvasWidth, CanvasHeight, CanvasPadding);
+            if (SnapEnabled) SnapToPixelGrid(Nodes);
+            // 為了讓 Edge 繪製位置與節點一致，將新的 X/Y 回寫到 Node.Position2D
+            foreach (var nv in Nodes)
+            {
+                nv.Node.Position2D = new System.Windows.Point(nv.X, nv.Y);
+            }
+            LogVisualSettings();
+
+            return Task.CompletedTask;
+        }
+
+        // 依需求新增：在填充 this.Nodes 後，執行 Fit to Canvas 的座標變換，並再更新節點與邊
+        public void LoadData(SchematicData data)
+        {
+            if (data == null) return;
+
+            Nodes.Clear();
+            Edges.Clear();
+
+            // 1) 先將 data.Nodes 轉為 NodeView（先用原始 Position2D）
+            var nodeMap = new Dictionary<object, SchematicNodeView>();
+            foreach (var n in data.Nodes)
+            {
+                object key = (object?)n.Entity ?? (object)n.Id;
+                if (nodeMap.ContainsKey(key))
+                {
+                    key = (n.Entity != null) ? (object)$"{n.Entity.EntityLabel}:{n.Id}" : (object)$"dup:{n.Id}:{nodeMap.Count}";
+                }
+                var nv = new SchematicNodeView
+                {
+                    Node = n,
+                    X = n.Position2D.X,
+                    Y = n.Position2D.Y,
+                    NodeBrush = GetBrushByIfcType(n.IfcType),
+                    NodeSize = _defaultNodeSize
+                };
+                nodeMap[key] = nv;
+            }
+
+            foreach (var nv in nodeMap.Values)
+                Nodes.Add(nv);
+
+            // 2) Fit to Canvas（最佳投影面）：以 3D → 2D 自動選擇 XY/XZ/YZ 面中面積最大者後再適配畫布
+            if (Nodes.Count > 0)
+            {
+                FitToCanvasBestProjection(Nodes, canvasWidth: 800, canvasHeight: 600, padding: 20);
+            }
+
+            // 3) 依據映射建立 EdgeView
+            foreach (var e in data.Edges)
+            {
+                if (e.StartNode == null || e.EndNode == null) continue;
+                var s = FindNodeView(nodeMap, e.StartNode);
+                var t = FindNodeView(nodeMap, e.EndNode);
+                if (s == null || t == null) continue;
+                var ev = new SchematicEdgeView
+                {
+                    Edge = e,
+                    Start = s,
+                    End = t,
+                    EdgeBrush = GetDarkerBrush(s.NodeBrush),
+                    Thickness = _defaultEdgeThickness
+                };
+                Edges.Add(ev);
+            }
+        }
+
+        private void BuildFromData(SchematicData data)
+        {
+            Nodes.Clear();
+            Edges.Clear();
+
+            // 建立 NodeView，先以 3D → 2D 的「最佳投影面」決定初始 X/Y（避免壓扁成線）
+            var nodeMap = new Dictionary<object, SchematicNodeView>();
+
+            // 計算最佳投影面（僅一次），用於初始座標：
+            // 策略：找出 X/Y/Z 三軸跨度，捨棄跨度最小的軸，使用其餘兩軸構成的平面
+            ProjectionPlane planeForSeed = ProjectionPlane.XY;
+            if (data.Nodes.Count > 0)
+            {
+                double minX = data.Nodes.Min(n => n.Position3D.X);
+                double maxX = data.Nodes.Max(n => n.Position3D.X);
+                double minY = data.Nodes.Min(n => n.Position3D.Y);
+                double maxY = data.Nodes.Max(n => n.Position3D.Y);
+                double minZ = data.Nodes.Min(n => n.Position3D.Z);
+                double maxZ = data.Nodes.Max(n => n.Position3D.Z);
+
+                double rangeX = Math.Max(1e-12, maxX - minX);
+                double rangeY = Math.Max(1e-12, maxY - minY);
+                double rangeZ = Math.Max(1e-12, maxZ - minZ);
+
+                if (rangeX <= rangeY && rangeX <= rangeZ)
+                    planeForSeed = ProjectionPlane.YZ; // 捨 X
+                else if (rangeY <= rangeX && rangeY <= rangeZ)
+                    planeForSeed = ProjectionPlane.XZ; // 捨 Y
+                else
+                    planeForSeed = ProjectionPlane.XY; // 捨 Z
+            }
+
+            foreach (var n in data.Nodes)
+            {
+                object key = (object?)n.Entity ?? (object)n.Id;
+                if (nodeMap.ContainsKey(key))
+                {
+                    key = (n.Entity != null) ? (object)$"{n.Entity.EntityLabel}:{n.Id}" : (object)$"dup:{n.Id}:{nodeMap.Count}";
+                }
+                // 優先使用已有的 2D；否則依最佳投影面從 3D 取兩軸作為初始座標
+                double x, y;
+                if (n.Position2D.X != 0 || n.Position2D.Y != 0)
+                {
+                    x = n.Position2D.X;
+                    y = n.Position2D.Y;
+                }
+                else
+                {
+                    switch (planeForSeed)
+                    {
+                        case ProjectionPlane.XZ: x = n.Position3D.X; y = n.Position3D.Z; break;
+                        case ProjectionPlane.YZ: x = n.Position3D.Y; y = n.Position3D.Z; break;
+                        default: x = n.Position3D.X; y = n.Position3D.Y; break;
+                    }
+                }
+                var nv = new SchematicNodeView
+                {
+                    Node = n,
+                    X = x * Scale,
+                    Y = y * Scale,
+                    NodeBrush = GetBrushByIfcType(n.IfcType),
+                    NodeSize = _defaultNodeSize
                 };
                 nodeMap[key] = nv;
             }
@@ -114,13 +508,16 @@ namespace IFC_Viewer_00.ViewModels
                     Edge = e,
                     Start = s,
                     End = t,
-                    EdgeBrush = GetDarkerBrush(s.NodeBrush)
+                    EdgeBrush = GetDarkerBrush(s.NodeBrush),
+                    Thickness = _defaultEdgeThickness
                 };
                 Edges.Add(ev);
             }
 
-            // 自動佈局（力導向）：在初始座標基礎上做微調，避免大量重疊
             ApplyForceDirectedLayout(Nodes.ToList(), Edges.ToList(), iterations: 200);
+            FitToCanvas(Nodes, CanvasWidth, CanvasHeight, CanvasPadding);
+            if (SnapEnabled) SnapToPixelGrid(Nodes);
+            LogVisualSettings();
         }
 
         private static SchematicNodeView? FindNodeView(Dictionary<object, SchematicNodeView> map, SchematicNode node)
@@ -135,24 +532,117 @@ namespace IFC_Viewer_00.ViewModels
             }
             return null;
         }
+
+        // 為避免奇數粗細與半像素導致的視覺偏差，將座標對齊到 0.5px 網格
+        private static void SnapToPixelGrid(IEnumerable<SchematicNodeView> nodes)
+        {
+            foreach (var nv in nodes)
+            {
+                double sx = Math.Round(nv.X * 2.0, MidpointRounding.AwayFromZero) / 2.0;
+                double sy = Math.Round(nv.Y * 2.0, MidpointRounding.AwayFromZero) / 2.0;
+                nv.X = sx;
+                nv.Y = sy;
+            }
+        }
+
+        private void AdjustNodeSize(int delta)
+        {
+            double newSize = Math.Clamp(_defaultNodeSize + delta, 2.0, 32.0);
+            _defaultNodeSize = newSize;
+            foreach (var nv in Nodes) nv.NodeSize = newSize;
+            LogVisualSettings();
+        }
+
+        private void AdjustLineWidth(int delta)
+        {
+            double newThick = Math.Clamp(_defaultEdgeThickness + delta, 1.0, 20.0);
+            _defaultEdgeThickness = newThick;
+            foreach (var ev in Edges) ev.Thickness = newThick;
+            LogVisualSettings();
+        }
+
+        private void LogVisualSettings()
+        {
+            AddLog($"[View] NodeSize={_defaultNodeSize:0.#} px | LineWidth={_defaultEdgeThickness:0.#} px | Snap={(SnapEnabled ? "On" : "Off")}");
+        }
     }
 
-    public class SchematicNodeView
+    public class SchematicNodeView : INotifyPropertyChanged
     {
         public SchematicNode Node { get; set; } = null!;
-        public double X { get; set; }
-        public double Y { get; set; }
-        public Brush NodeBrush { get; set; } = Brushes.SteelBlue;
-        public bool IsSelected { get; set; }
+        private double _x;
+        // X/Y 表示圓心座標，供邊線與定位之用
+        public double X
+        {
+            get => _x;
+            set
+            {
+                if (_x != value)
+                {
+                    _x = value;
+                    OnPropertyChanged(nameof(X));
+                    OnPropertyChanged(nameof(TopLeftX)); // 依賴 X
+                }
+            }
+        }
+        private double _y;
+        public double Y
+        {
+            get => _y;
+            set
+            {
+                if (_y != value)
+                {
+                    _y = value;
+                    OnPropertyChanged(nameof(Y));
+                    OnPropertyChanged(nameof(TopLeftY)); // 依賴 Y
+                }
+            }
+        }
+
+    // 節點的繪製尺寸（像素）。預設 8px 直徑（偶數，較不易出現半像素誤差）。
+    private double _nodeSize = 8.0;
+        public double NodeSize
+        {
+            get => _nodeSize;
+            set
+            {
+                if (Math.Abs(_nodeSize - value) > double.Epsilon)
+                {
+                    _nodeSize = value;
+                    OnPropertyChanged(nameof(NodeSize));
+                    OnPropertyChanged(nameof(TopLeftX));
+                    OnPropertyChanged(nameof(TopLeftY));
+                }
+            }
+        }
+
+        // 供 Canvas.Left/Top 綁定使用的左上角座標（將中心減去半徑）
+        public double TopLeftX => X - NodeSize / 2.0;
+        public double TopLeftY => Y - NodeSize / 2.0;
+        private Brush _nodeBrush = Brushes.SteelBlue;
+        public Brush NodeBrush { get => _nodeBrush; set { if (_nodeBrush != value) { _nodeBrush = value; OnPropertyChanged(nameof(NodeBrush)); } } }
+        private bool _isSelected;
+        public bool IsSelected { get => _isSelected; set { if (_isSelected != value) { _isSelected = value; OnPropertyChanged(nameof(IsSelected)); } } }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+        protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 
-    public class SchematicEdgeView
+    public class SchematicEdgeView : INotifyPropertyChanged
     {
         public SchematicEdge Edge { get; set; } = null!;
         public SchematicNodeView Start { get; set; } = null!;
         public SchematicNodeView End { get; set; } = null!;
-        public Brush EdgeBrush { get; set; } = Brushes.DarkSlateGray;
-        public bool IsSelected { get; set; }
+        private Brush _edgeBrush = Brushes.DarkSlateGray;
+        public Brush EdgeBrush { get => _edgeBrush; set { if (_edgeBrush != value) { _edgeBrush = value; OnPropertyChanged(nameof(EdgeBrush)); } } }
+        private double _thickness = 2.0;
+        public double Thickness { get => _thickness; set { if (Math.Abs(_thickness - value) > double.Epsilon) { _thickness = value; OnPropertyChanged(nameof(Thickness)); } } }
+        private bool _isSelected;
+        public bool IsSelected { get => _isSelected; set { if (_isSelected != value) { _isSelected = value; OnPropertyChanged(nameof(IsSelected)); } } }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+        protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 
     // 輕量 ICommand 實作
@@ -282,14 +772,120 @@ namespace IFC_Viewer_00.ViewModels
                 if (temperature < 0.01) break;
             }
 
-            // 位置正規化到正座標區域（左上為最小）
-            minX = nodes.Min(n => n.X); minY = nodes.Min(n => n.Y);
-            double offX = -minX + 40; // 邊距
-            double offY = -minY + 40;
+            // 佈局後不在此處規模化，交由 FitToCanvas 統一處理
+        }
+
+        private static void FitToCanvas(IList<SchematicNodeView> nodes, double canvasWidth, double canvasHeight, double padding)
+        {
+            if (nodes == null || nodes.Count == 0) return;
+            double minX = nodes.Min(n => n.X);
+            double maxX = nodes.Max(n => n.X);
+            double minY = nodes.Min(n => n.Y);
+            double maxY = nodes.Max(n => n.Y);
+
+            double width = Math.Max(1e-6, maxX - minX);
+            double height = Math.Max(1e-6, maxY - minY);
+
+            double targetW = Math.Max(1, canvasWidth - 2 * padding);
+            double targetH = Math.Max(1, canvasHeight - 2 * padding);
+            double scale = Math.Min(targetW / width, targetH / height);
+            if (double.IsInfinity(scale) || double.IsNaN(scale) || scale <= 0) scale = 1.0;
+
             foreach (var v in nodes)
             {
-                v.X += offX; v.Y += offY;
+                v.X = (v.X - minX) * scale + padding;
+                v.Y = (v.Y - minY) * scale + padding;
             }
+        }
+
+        private enum ProjectionPlane { XY, XZ, YZ }
+
+        // 以 3D 座標自動選擇最佳投影面：
+        // 策略：計算 X/Y/Z 三軸的跨度 (range)；選擇跨度最小的軸作為「厚度」方向，捨棄之，
+        // 以其餘兩軸的平面作為投影面，然後適配畫布。
+        private static void FitToCanvasBestProjection(IList<SchematicNodeView> nodes, double canvasWidth, double canvasHeight, double padding)
+        {
+            if (nodes == null || nodes.Count == 0) return;
+
+            // 1) 取得 3D 範圍
+            double minX = nodes.Min(n => n.Node.Position3D.X);
+            double maxX = nodes.Max(n => n.Node.Position3D.X);
+            double minY = nodes.Min(n => n.Node.Position3D.Y);
+            double maxY = nodes.Max(n => n.Node.Position3D.Y);
+            double minZ = nodes.Min(n => n.Node.Position3D.Z);
+            double maxZ = nodes.Max(n => n.Node.Position3D.Z);
+
+            // 2) 計算三軸的跨度（range），選擇跨度最小的軸捨棄
+            double rangeX = Math.Max(1e-12, maxX - minX);
+            double rangeY = Math.Max(1e-12, maxY - minY);
+            double rangeZ = Math.Max(1e-12, maxZ - minZ);
+
+            // 選擇兩個跨度較大的軸組成平面；若相等，偏好 XY → XZ → YZ
+            ProjectionPlane plane;
+            double chosenWidth, chosenHeight;
+            double minU, minV; // 與 plane 對應之軸的最小值
+
+            if (rangeX <= rangeY && rangeX <= rangeZ)
+            {
+                // 捨棄 X，投影 YZ
+                plane = ProjectionPlane.YZ;
+                chosenWidth = rangeY; chosenHeight = rangeZ;
+                minU = minY; minV = minZ;
+            }
+            else if (rangeY <= rangeX && rangeY <= rangeZ)
+            {
+                // 捨棄 Y，投影 XZ
+                plane = ProjectionPlane.XZ;
+                chosenWidth = rangeX; chosenHeight = rangeZ;
+                minU = minX; minV = minZ;
+            }
+            else
+            {
+                // 捨棄 Z，投影 XY
+                plane = ProjectionPlane.XY;
+                chosenWidth = rangeX; chosenHeight = rangeY;
+                minU = minX; minV = minY;
+            }
+
+            // 4) 適配畫布（等比縮放 + 邊距）
+            double targetW = Math.Max(1, canvasWidth - 2 * padding);
+            double targetH = Math.Max(1, canvasHeight - 2 * padding);
+            double scale = Math.Min(targetW / Math.Max(chosenWidth, 1e-12), targetH / Math.Max(chosenHeight, 1e-12));
+            if (double.IsNaN(scale) || double.IsInfinity(scale) || scale <= 0) scale = 1.0;
+
+            foreach (var v in nodes)
+            {
+                var p = v.Node.Position3D;
+                double u, w;
+                switch (plane)
+                {
+                    case ProjectionPlane.XZ:
+                        u = p.X; w = p.Z; break;
+                    case ProjectionPlane.YZ:
+                        u = p.Y; w = p.Z; break;
+                    default: // XY
+                        u = p.X; w = p.Y; break;
+                }
+
+                double newX = (u - minU) * scale + padding;
+                double newY = (w - minV) * scale + padding;
+                v.Node.Position2D = new Point(newX, newY);
+                v.X = newX;
+                v.Y = newY;
+            }
+        }
+
+        // 對外公開：重置視圖，依 Canvas 尺寸重新 Fit
+        public void RefitToCanvas()
+        {
+            FitToCanvas(Nodes, CanvasWidth, CanvasHeight, CanvasPadding);
+        }
+
+        // 對外公開：重新跑力導向佈局，必要時再 FitToCanvas
+        public void Relayout(int iterations = 200, bool refit = true)
+        {
+            ApplyForceDirectedLayout(Nodes.ToList(), Edges.ToList(), iterations);
+            if (refit) FitToCanvas(Nodes, CanvasWidth, CanvasHeight, CanvasPadding);
         }
     }
 }
