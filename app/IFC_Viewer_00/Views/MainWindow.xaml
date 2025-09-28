@@ -44,6 +44,16 @@
             <Button x:Name="BtnGeneratePipeAxes" Content="Pipe軸線" Margin="8,0,0,0" Padding="10,4" Command="{Binding GeneratePipeAxesCommand}" />
             <Button x:Name="BtnShowOverlay3D" Content="3D 顯示中線/端點" Margin="8,0,0,0" Padding="10,4" Command="{Binding ShowPipeOverlay3DCommand}" />
             <Button x:Name="BtnClearOverlay3D" Content="清除 3D Overlay" Margin="8,0,0,0" Padding="10,4" Command="{Binding ClearOverlay3DCommand}" />
+        <StackPanel Orientation="Horizontal" Margin="16,0,0,0" VerticalAlignment="Center">
+        <TextBlock Text="線寬:" Margin="8,0,4,0" VerticalAlignment="Center"/>
+        <Slider Width="100" Minimum="0.5" Maximum="10" SmallChange="0.5" LargeChange="1"
+            Value="{Binding OverlayLineThickness, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+        <TextBlock Text="{Binding OverlayLineThickness, StringFormat={}{0:0.0}}" Margin="4,0,0,0" VerticalAlignment="Center"/>
+        <TextBlock Text=" 點大小:" Margin="12,0,4,0" VerticalAlignment="Center"/>
+        <Slider Width="100" Minimum="0.5" Maximum="20" SmallChange="0.5" LargeChange="1"
+            Value="{Binding OverlayPointSize, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+        <TextBlock Text="{Binding OverlayPointSize, StringFormat={}{0:0.0}}" Margin="4,0,0,0" VerticalAlignment="Center"/>
+        </StackPanel>
             <StackPanel Orientation="Horizontal" Margin="16,0,0,0" VerticalAlignment="Center">
                 <TextBlock Text="模型透明度:" Margin="8,0,4,0" VerticalAlignment="Center"/>
                 <Slider Width="160" Minimum="0" Maximum="1" SmallChange="0.05" LargeChange="0.1"

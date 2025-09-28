@@ -1,5 +1,5 @@
 ```markdown
-# IFC Viewer 除錯報告（同步 2025-09-23）
+# IFC Viewer 除錯報告（同步 2025-09-28）
 
 > 目的：快速對齊狀態、重現步驟、收集必要日誌；新增多選/可見性測試清單與 Schematic fallback 說明。
 
@@ -9,7 +9,8 @@
 - 右鍵 Isolate/Hide/ShowAll 綁定已修正（PlacementTarget.DataContext）；3D 可見度應有變化並有 log 記錄。
 - 已加入 TreeView 多選（Ctrl/Shift）與可見性勾選；多選時 3D 採集合高亮；可見性會更新 Hidden 清單。
 - Schematic 採 Ports-only（不啟用幾何鄰近推斷）；若缺 `IfcRelConnectsPorts` 關係，視圖僅顯示節點並於 UI 顯示提示 Banner。
- - 多選高亮相容性已加強：若控制項集合要求 `IPersistEntity`，會把 Label 轉換為實體加入集合，並做輕量更新（InvalidateVisual + UpdateLayout），確保即時可見。
+- 多選高亮相容性已加強：若控制項集合要求 `IPersistEntity`，會把 Label 轉換為實體加入集合，並做輕量更新（InvalidateVisual + UpdateLayout），確保即時可見。
+- 新增 Overlay/Viewport 強化：在 Strong 3D 服務中擴充 Viewport 解析（多名稱/欄位/視覺樹），並加入 overlay 掛載與點數資訊診斷。顯示 3D 中線/端點時會自動降低模型不透明度並可調整線寬/點大小。
 
 ---
 
@@ -50,6 +51,16 @@
 - [ ] Trace/Log 中可見：系統/成員/全模型 Ports 蒐集數量、成功建立的邊數
 - [ ] 視圖支援滾輪縮放、中鍵平移、「重置視圖」與「重新布局」
 
+### F. 3D Overlay（中線/端點）與透明度
+- [ ] 按下「3D 顯示中線/端點」後，模型不透明度自動降到 ~0.3（可由 UI 調整），且視圖出現橙紅色線段與黑色端點
+- [ ] 線寬、點大小滑桿對 overlay 有即時效果
+- [ ] 清除 overlay 後，不透明度會恢復按鈕前的設定值
+- [ ] 若 overlay 未出現，請檢查偵錯輸出是否含下列關鍵字：
+  - `[StrongViewer] EnsureViewport: found via property/field/visual tree ...` 或 `HelixViewport3D NOT found`
+  - `[StrongViewer] OverlayRoot attached to viewport.`
+  - `[StrongViewer] Overlay children updated. LinePoints=..., PointCount=...`
+  若 `LinePoints/PointCount` 為 0，請回報以檢查資料來源（軸線/端點是否為空）。
+
 ---
 
 ## 日誌與輸出位置
@@ -59,6 +70,7 @@
   - 隔離/隱藏集合 count 前後
   - ReloadModel(...) 與相機呼叫（ZoomSelected / ViewHome）
   - HighlightEntities：是否找到 `SelectedEntities`/`HighlightedEntities`、集合型別、加入數量，以及是否有 InvalidateVisual/UpdateLayout。
+  - Overlay/Viewport 診斷：EnsureViewport 解析路徑、OverlayRoot 掛載、Overlay children 的 LinePoints/PointCount
 
 ---
 
@@ -68,6 +80,7 @@
 3) 右鍵 ShowAll → 應全顯並回 Home。
 4) TreeView 依序測 Ctrl/Shift 多選；觀察 3D 是否集合高亮。
 5) 勾/取消節點 IsVisible；觀察 3D Hidden 更新。
+6) 按「3D 顯示中線/端點」，觀察是否自動半透明且出現線段/端點；若未見，請擷取偵錯輸出中與 Overlay/Viewport 相關的訊息。
 
 ---
 
@@ -76,6 +89,7 @@
 - 若 EXE 被占用導致 MSB3026/MSB3027：請先關閉執行中的應用再建置。
 - 集合命名：IsolateInstances/IsolatedInstances、HiddenInstances/HiddenEntities
 - ReloadModel 的 enum（ModelRefreshOptions）可能為巢狀型別；已以反射與多層 Refresh Fallback 處理
+ - Overlay 需依賴 HelixViewport3D；已在 Strong 服務中加入多路徑解析避免版本差異導致找不到 Viewport。
 
 ---
 

@@ -155,8 +155,17 @@ namespace IFC_Viewer_00.Services
             if (_viewer != null)
             {
                 TryInvokeStrongly(() => _viewer.ModelOpacity = opacity);
-                // 某些版本也支援 SetOpacity(Double)
+                // 嘗試多種簽章：SetOpacity(double|int|float)；部分版本使用 0..100 百分比
                 TryInvokeStrongly(() => _viewer.SetOpacity(opacity));
+                TryInvokeStrongly(() => _viewer.GetType().GetMethod("SetOpacity", BindingFlags.Public | BindingFlags.Instance, null, new[] { typeof(int) }, null)?.Invoke(_viewer, new object[] { (int)Math.Round(opacity * 100) }));
+                TryInvokeStrongly(() => _viewer.GetType().GetMethod("SetOpacity", BindingFlags.Public | BindingFlags.Instance, null, new[] { typeof(float) }, null)?.Invoke(_viewer, new object[] { (float)(opacity * 100) }));
+                // 可能存在的開關
+                TryInvokeStrongly(() => _viewer.GetType().GetProperty("EnableTransparency")?.SetValue(_viewer, true));
+                TryInvokeStrongly(() => _viewer.GetType().GetProperty("IsTransparent")?.SetValue(_viewer, true));
+                // 輕量刷新
+                TryInvokeStrongly(() => _viewer.ReloadModel(DrawingControl3D.ModelRefreshOptions.ViewPreserveCameraPosition | DrawingControl3D.ModelRefreshOptions.ViewPreserveSelection));
+                TryInvokeStrongly(() => _viewer.InvalidateVisual());
+                TryInvokeStrongly(() => _viewer.UpdateLayout());
                 return;
             }
             // 反射路徑：優先 ModelOpacity，再退回 SetOpacity
@@ -170,9 +179,21 @@ namespace IFC_Viewer_00.Services
                 }
                 else
                 {
-                    var mi = _control.GetType().GetMethod("SetOpacity", flags, new Type[] { typeof(double) });
-                    mi?.Invoke(_control, new object[] { opacity });
+                    var t = _control.GetType();
+                    var mi = t.GetMethod("SetOpacity", flags, new Type[] { typeof(double) });
+                    if (mi != null) mi.Invoke(_control, new object[] { opacity });
+                    // 其他簽章
+                    mi = t.GetMethod("SetOpacity", flags, new Type[] { typeof(int) });
+                    if (mi != null) mi.Invoke(_control, new object[] { (int)Math.Round(opacity * 100) });
+                    mi = t.GetMethod("SetOpacity", flags, new Type[] { typeof(float) });
+                    if (mi != null) mi.Invoke(_control, new object[] { (float)(opacity * 100) });
                 }
+                // 可能存在的開關
+                try { _control.GetType().GetProperty("EnableTransparency", flags)?.SetValue(_control, true); } catch { }
+                try { _control.GetType().GetProperty("IsTransparent", flags)?.SetValue(_control, true); } catch { }
+                // 重新整理
+                TryInvokeReflective(_control, "ReloadModel");
+                TryInvokeReflective(_control, "Refresh");
             }
             catch { }
         }
@@ -531,8 +552,25 @@ namespace IFC_Viewer_00.Services
                 if (viewport == null) return;
                 EnsureOverlayRoot(viewport);
 
-                // 準確呈現：不做任何視線偏移，直接使用原始世界座標
+                // 為避免被模型遮擋：沿相機視線方向施加極小偏移（單位隨相機距離縮放）
                 var offset = new Vector3D(0, 0, 0);
+                try
+                {
+                    var cam = viewport.Camera as ProjectionCamera;
+                    if (cam != null)
+                    {
+                        var look = cam.LookDirection;
+                        var len = look.Length;
+                        if (len > 1e-9)
+                        {
+                            var dir = new Vector3D(look.X / len, look.Y / len, look.Z / len);
+                            var eps = Math.Max(1e-6, len * 0.002);
+                            eps = Math.Min(eps, len * 0.05);
+                            offset = new Vector3D(dir.X * eps, dir.Y * eps, dir.Z * eps);
+                        }
+                    }
+                }
+                catch { }
 
                 _overlayLines ??= new LinesVisual3D();
                 _overlayLines.Thickness = Math.Max(0.5, lineThickness);
@@ -558,6 +596,7 @@ namespace IFC_Viewer_00.Services
                 }
 
                 AttachOverlayIfNeeded(viewport);
+                try { viewport.InvalidateVisual(); } catch { }
             }
             catch (Exception ex)
             {

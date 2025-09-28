@@ -23,6 +23,8 @@ namespace IFC_Viewer_00.ViewModels
     {
     private readonly IViewer3DService _viewer3D;
     private readonly ISelectionService _selection;
+        // 顯示 3D Overlay 時的透明度快照（用於清除時還原）
+        private double? _opacityBeforeOverlay;
         // 用於避免 VM 與 SelectionService 之間的無限循環
         private bool _isSyncingSelection = false;
         // Sprint 1: 3D 物件高亮
@@ -42,6 +44,13 @@ namespace IFC_Viewer_00.ViewModels
     // 3D 模型透明度（0~1），變更時即時套用到 3D 控制項
     [ObservableProperty]
     private double modelOpacity = 1.0;
+
+    // 3D Overlay 視覺參數（可由 UI 調整）
+    [ObservableProperty]
+    private double overlayLineThickness = 2.0;
+
+    [ObservableProperty]
+    private double overlayPointSize = 3.0;
 
     [ObservableProperty]
     private ObservableCollection<ElementProperty> selectedElementProperties = new();
@@ -75,7 +84,7 @@ namespace IFC_Viewer_00.ViewModels
             GenerateSchematicV1Command = new RelayCommand(async () => await OnGenerateSchematicV1Async());
             GeneratePipeAxesCommand = new RelayCommand(async () => await OnGeneratePipeAxesAsync());
             ShowPipeOverlay3DCommand = new RelayCommand(async () => await OnShowPipeOverlay3DAsync());
-            ClearOverlay3DCommand = new RelayCommand(() => _viewer3D.ClearOverlay());
+            ClearOverlay3DCommand = new RelayCommand(OnClearOverlay3D);
 
             IsolateSelectionCommand = new RelayCommand(OnIsolateSelection);
             HideSelectionCommand = new RelayCommand(OnHideSelection);
@@ -448,6 +457,14 @@ namespace IFC_Viewer_00.ViewModels
                         .ToList();
                     var endpoints = data.Nodes.Select(n => new Point3D(n.Position3D.X, n.Position3D.Y, n.Position3D.Z)).ToList();
                     _viewer3D.ShowOverlayPipeAxes(axes, endpoints, lineColor: System.Windows.Media.Colors.DeepSkyBlue, lineThickness: 2.0, pointColor: System.Windows.Media.Colors.Black, pointSize: 3.0);
+                    // 顯示 Overlay 後自動降低透明度（與「單獨顯示 3D Overlay」一致）
+                    try
+                    {
+                        if (_opacityBeforeOverlay == null)
+                            _opacityBeforeOverlay = ModelOpacity;
+                        ModelOpacity = 0.3; // 觸發 OnModelOpacityChanged
+                    }
+                    catch { }
                 }
                 catch { }
                 var svm = new IFC_Viewer_00.ViewModels.SchematicViewModel(service, _selection)
@@ -493,13 +510,42 @@ namespace IFC_Viewer_00.ViewModels
                                   End: new Point3D(e.EndNode.Position3D.X, e.EndNode.Position3D.Y, e.EndNode.Position3D.Z)))
                     .ToList();
                 var endpoints = data.Nodes.Select(n => new Point3D(n.Position3D.X, n.Position3D.Y, n.Position3D.Z)).ToList();
-                _viewer3D.ShowOverlayPipeAxes(axes, endpoints, lineColor: System.Windows.Media.Colors.DeepSkyBlue, lineThickness: 2.0, pointColor: System.Windows.Media.Colors.Black, pointSize: 3.0);
+                _viewer3D.ShowOverlayPipeAxes(axes, endpoints,
+                    lineColor: System.Windows.Media.Colors.DeepSkyBlue,
+                    lineThickness: Math.Max(0.5, OverlayLineThickness),
+                    pointColor: System.Windows.Media.Colors.Black,
+                    pointSize: Math.Max(0.5, OverlayPointSize));
+
+                // 顯示 Overlay 後，自動將模型透明度降到 0.3，並保存原值以便清除時還原
+                try
+                {
+                    if (_opacityBeforeOverlay == null)
+                        _opacityBeforeOverlay = ModelOpacity;
+                    ModelOpacity = 0.3; // 觸發 OnModelOpacityChanged → _viewer3D.SetModelOpacity
+                }
+                catch { }
                 StatusMessage = $"3D Overlay: 中線 {axes.Count} 條，端點 {endpoints.Count} 個";
             }
             catch (Exception ex)
             {
                 MessageBox.Show($"3D Overlay 失敗: {ex.Message}", "3D Overlay", MessageBoxButton.OK, MessageBoxImage.Error);
             }
+        }
+
+        // 清除 3D Overlay，並還原顯示 Overlay 前的模型透明度
+        private void OnClearOverlay3D()
+        {
+            try
+            {
+                _viewer3D.ClearOverlay();
+                if (_opacityBeforeOverlay.HasValue)
+                {
+                    var restore = _opacityBeforeOverlay.Value;
+                    _opacityBeforeOverlay = null;
+                    ModelOpacity = restore; // 觸發 OnModelOpacityChanged
+                }
+            }
+            catch { }
         }
 
         // 階段 4/6：模型變更通知，載入空間結構樹

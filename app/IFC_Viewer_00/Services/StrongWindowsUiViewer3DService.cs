@@ -838,14 +838,8 @@ namespace IFC_Viewer_00.Services
             {
                 return RunOnUi(() =>
                 {
-                    // 使用快取的 Viewport 減少反射與屬性讀取成本
-                    var viewport = _viewportCached;
-                    if (!_triedViewportCache || viewport == null)
-                    {
-                        _triedViewportCache = true;
-                        viewport = _viewer.GetType().GetProperty("Viewport")?.GetValue(_viewer) as HelixViewport3D;
-                        _viewportCached = viewport;
-                    }
+                    // 使用強化的 EnsureViewport 以相容不同版本的屬性命名
+                    var viewport = EnsureViewport();
                     if (viewport == null)
                     {
                         try { Trace.WriteLine("[StrongViewer] HitTest: Viewport is null."); } catch { }
@@ -929,10 +923,27 @@ namespace IFC_Viewer_00.Services
             {
                 try
                 {
+                    // 1) 正規化輸入
                     opacity = Math.Max(0.0, Math.Min(1.0, opacity));
-                    // 直接呼叫強型別控制項的 ModelOpacity/SetOpacity
-                    _viewer.ModelOpacity = opacity;
+
+                    // 2) 嘗試多條路徑設定透明度
+                    try { _viewer.ModelOpacity = opacity; } catch { }
                     try { _viewer.SetOpacity(opacity); } catch { }
+                    // 某些版本的 SetOpacity 以 0~100 百分比（int/float/double）為參數，補充嘗試
+                    try { _viewer.GetType().GetMethod("SetOpacity", BindingFlags.Public | BindingFlags.Instance, null, new[] { typeof(int) }, null)?.Invoke(_viewer, new object[] { (int)Math.Round(opacity * 100) }); } catch { }
+                    try { _viewer.GetType().GetMethod("SetOpacity", BindingFlags.Public | BindingFlags.Instance, null, new[] { typeof(float) }, null)?.Invoke(_viewer, new object[] { (float)(opacity * 100) }); } catch { }
+
+                    // 3) 若控制項提供透明渲染開關，啟用之（容錯）
+                    TrySetBoolPropertyIfExists(_viewer, "EnableTransparency", true);
+                    TrySetBoolPropertyIfExists(_viewer, "IsTransparent", true);
+
+                    // 4) 重新載入以確保材質更新（保留相機與選取）
+                    TryInvokeReloadModelWithOptionsOnControl(_viewer,
+                        new[] { "ViewPreserveCameraPosition", "ViewPreserveSelection", "View" });
+                    // 輕量刷新
+                    try { InvokeIfExists(_viewer, "RefreshView"); } catch { }
+                    try { _viewer.InvalidateVisual(); } catch { }
+                    try { _viewer.UpdateLayout(); } catch { }
                 }
                 catch { }
             });
@@ -962,11 +973,110 @@ namespace IFC_Viewer_00.Services
         {
             if (_viewportCached != null) return _viewportCached;
             _triedViewportCache = true;
+            HelixViewport3D? vp = null;
             try
             {
-                _viewportCached = _viewer.GetType().GetProperty("Viewport")?.GetValue(_viewer) as HelixViewport3D;
+                var t = _viewer.GetType();
+                // 1) 嘗試常見屬性名稱
+                string[] propNames = new[] { "Viewport", "Viewport3D", "ViewPort", "HelixViewport", "HelixViewport3D" };
+                foreach (var pn in propNames)
+                {
+                    try
+                    {
+                        var pi = t.GetProperty(pn, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        if (pi == null) continue;
+                        var val = pi.GetValue(_viewer);
+                        if (val is HelixViewport3D hvp)
+                        {
+                            vp = hvp;
+                            try { Trace.WriteLine($"[StrongViewer] EnsureViewport: found via property '{pn}'."); } catch { }
+                            break;
+                        }
+                    }
+                    catch { }
+                }
+
+                // 2) 掃描所有屬性，找出型別或名稱疑似為 HelixViewport3D 的成員
+                if (vp == null)
+                {
+                    foreach (var pi in t.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+                    {
+                        try
+                        {
+                            var val = pi.GetValue(_viewer);
+                            if (val is HelixViewport3D hvp)
+                            {
+                                vp = hvp;
+                                try { Trace.WriteLine($"[StrongViewer] EnsureViewport: found via scanning property '{pi.Name}'."); } catch { }
+                                break;
+                            }
+                            if (val != null)
+                            {
+                                var name = val.GetType().Name;
+                                if ((name.IndexOf("HelixViewport3D", StringComparison.OrdinalIgnoreCase) >= 0 || name.IndexOf("Viewport3D", StringComparison.OrdinalIgnoreCase) >= 0) && val is HelixViewport3D hvp2)
+                                {
+                                    vp = hvp2;
+                                    try { Trace.WriteLine($"[StrongViewer] EnsureViewport: found via property '{pi.Name}' by type name match."); } catch { }
+                                    break;
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+
+                // 3) 掃描所有欄位
+                if (vp == null)
+                {
+                    foreach (var fi in t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+                    {
+                        try
+                        {
+                            var val = fi.GetValue(_viewer);
+                            if (val is HelixViewport3D hvp)
+                            {
+                                vp = hvp;
+                                try { Trace.WriteLine($"[StrongViewer] EnsureViewport: found via field '{fi.Name}'."); } catch { }
+                                break;
+                            }
+                            if (val != null)
+                            {
+                                var name = val.GetType().Name;
+                                if ((name.IndexOf("HelixViewport3D", StringComparison.OrdinalIgnoreCase) >= 0 || name.IndexOf("Viewport3D", StringComparison.OrdinalIgnoreCase) >= 0) && val is HelixViewport3D hvp2)
+                                {
+                                    vp = hvp2;
+                                    try { Trace.WriteLine($"[StrongViewer] EnsureViewport: found via field '{fi.Name}' by type name match."); } catch { }
+                                    break;
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+
+                // 4) 從視覺樹向下搜尋
+                if (vp == null)
+                {
+                    try
+                    {
+                        if (_viewer is DependencyObject dep)
+                        {
+                            vp = FindHelixViewportInVisualTree(dep);
+                            if (vp != null)
+                            {
+                                try { Trace.WriteLine("[StrongViewer] EnsureViewport: found via visual tree search."); } catch { }
+                            }
+                        }
+                    }
+                    catch { }
+                }
             }
-            catch { _viewportCached = null; }
+            catch { }
+            _viewportCached = vp;
+            if (vp == null)
+            {
+                try { Trace.WriteLine("[StrongViewer] EnsureViewport: HelixViewport3D NOT found."); } catch { }
+            }
             return _viewportCached;
         }
 
@@ -983,11 +1093,36 @@ namespace IFC_Viewer_00.Services
             if (!viewport.Children.Contains(_overlayRoot))
             {
                 viewport.Children.Add(_overlayRoot);
+                try { Trace.WriteLine("[StrongViewer] OverlayRoot attached to viewport."); } catch { }
             }
             // Rebuild children
             try { _overlayRoot.Children.Clear(); } catch { }
             if (_overlayLines != null) _overlayRoot.Children.Add(_overlayLines);
             if (_overlayPoints != null) _overlayRoot.Children.Add(_overlayPoints);
+            try
+            {
+                var lc = _overlayLines?.Points?.Count ?? 0;
+                var pc = _overlayPoints?.Points?.Count ?? 0;
+                Trace.WriteLine($"[StrongViewer] Overlay children updated. LinePoints={lc}, PointCount={pc}.");
+            }
+            catch { }
+        }
+
+        private static HelixViewport3D? FindHelixViewportInVisualTree(DependencyObject root)
+        {
+            try
+            {
+                if (root is HelixViewport3D hv) return hv;
+                int count = VisualTreeHelper.GetChildrenCount(root);
+                for (int i = 0; i < count; i++)
+                {
+                    var child = VisualTreeHelper.GetChild(root, i);
+                    var found = FindHelixViewportInVisualTree(child);
+                    if (found != null) return found;
+                }
+            }
+            catch { }
+            return null;
         }
 
         private static RayMeshGeometry3DHitTestResult? FindHit(HelixViewport3D viewport, Point position)
