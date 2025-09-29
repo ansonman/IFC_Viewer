@@ -24,6 +24,7 @@
             <Button Content="線 +" Margin="0,0,4,0" Padding="8,2" Command="{Binding IncreaseLineWidthCommand}"/>
             <Button Content="線 -" Margin="0,0,8,0" Padding="8,2" Command="{Binding DecreaseLineWidthCommand}"/>
             <Button Content="Snap" Margin="0" Padding="8,2" Command="{Binding ToggleSnapCommand}"/>
+            <Button Content="Levels" Margin="8,0,0,0" Padding="8,2" Command="{Binding ToggleLevelsCommand}"/>
         </StackPanel>
 
         <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
@@ -35,6 +36,35 @@
                         <TranslateTransform x:Name="PanTransform" X="0" Y="0"/>
                     </TransformGroup>
                 </Canvas.RenderTransform>
+                <!-- Level Lines: 畫在邊與點的下層 -->
+                <ItemsControl ItemsSource="{Binding LevelLines}">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <Canvas/>
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemContainerStyle>
+                        <Style TargetType="ContentPresenter">
+                            <Setter Property="Canvas.Left" Value="0"/>
+                            <Setter Property="Canvas.Top" Value="0"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding Visible}" Value="False">
+                                    <Setter Property="UIElement.Visibility" Value="Collapsed"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </ItemsControl.ItemContainerStyle>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Grid>
+                                <Line X1="{Binding X1}" X2="{Binding X2}" Y1="{Binding Y}" Y2="{Binding Y}"
+                                      Stroke="#808080" StrokeDashArray="4,4" StrokeThickness="1" SnapsToDevicePixels="True"/>
+                                <TextBlock Text="{Binding Name}" FontSize="10" Foreground="#606060"
+                                           Canvas.Left="{Binding LabelX}" Canvas.Top="{Binding LabelY}"/>
+                            </Grid>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
                 <!-- 無 Ports 提示 Banner -->
                 <Border Background="#FFFDEDD0" BorderBrush="#FFE6B422" BorderThickness="1" CornerRadius="4" Padding="8" Visibility="Collapsed">
                     <Border.Style>

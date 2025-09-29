@@ -19,6 +19,40 @@ namespace IFC_Viewer_00.Services
         private enum ProjectionPlane { XY, XZ, YZ }
         // 新增：對外公開可選平面枚舉（供 V1 流程使用）
         public enum UserProjectionPlane { XY, XZ, YZ }
+        
+
+        // 取得樓層 Elevation（同一型別 IModel，亦兼容 IStepModel 別名）
+        private static void PopulateLevels(IModel ifcModel, SchematicData data)
+        {
+            if (ifcModel == null || data == null) return;
+            try
+            {
+                var storeys = ifcModel.Instances.OfType<IIfcBuildingStorey>()?.ToList() ?? new List<IIfcBuildingStorey>();
+                var levels = new List<LevelInfo>();
+                foreach (var s in storeys)
+                {
+                    string name = string.Empty;
+                    try { name = IfcStringHelper.FromValue((s as IIfcRoot)?.Name) ?? IfcStringHelper.FromValue((s as IIfcRoot)?.GlobalId) ?? ""; } catch { }
+                    double? elev = null;
+                    try { elev = (s as dynamic).Elevation; } catch { }
+                    if (!elev.HasValue)
+                    {
+                        try
+                        {
+                            if (s is IIfcProduct sp)
+                            {
+                                var p = GetElementPoint(sp);
+                                elev = p.Z;
+                            }
+                        }
+                        catch { }
+                    }
+                    levels.Add(new LevelInfo { Name = name, Elevation = elev ?? 0.0 });
+                }
+                data.Levels.AddRange(levels.OrderBy(l => l.Elevation));
+            }
+            catch { }
+        }
 
         public record PortExtractionStats(
             string SystemName,
@@ -437,6 +471,7 @@ namespace IFC_Viewer_00.Services
                     catch { }
 
                     // e) 收集完成後加入結果
+                    try { PopulateLevels(ifcModel, data); } catch { }
                     results.Add(data);
                 }
 
@@ -521,6 +556,8 @@ namespace IFC_Viewer_00.Services
                 data.Edges.Add(edge);
             }
 
+            // 樓層資訊
+            try { PopulateLevels(ifcModel, data); } catch { }
             return Task.FromResult(data);
         }
 
@@ -842,6 +879,8 @@ namespace IFC_Viewer_00.Services
                 System.Diagnostics.Trace.WriteLine($"[Service][AS] Result: Nodes={data.Nodes.Count}, Edges={data.Edges.Count} (edgesAdded={edgesAdded})");
             }
             catch { }
+            // 樓層資訊
+            try { PopulateLevels(ifcModel, data); } catch { }
             return data;
         }
 
@@ -1032,6 +1071,8 @@ namespace IFC_Viewer_00.Services
                 }
             }
             catch { }
+            // 樓層資訊
+            try { PopulateLevels(ifcModel, data); } catch { }
             return data;
         }
 
@@ -1379,6 +1420,8 @@ namespace IFC_Viewer_00.Services
 
                 System.Diagnostics.Trace.WriteLine($"[Service][PipeAxes] Segments processed={segments.Count}, linesBuilt={segCount}, skipped={segSkipped}, plane={planeNorm}");
                 data.SystemName = $"PipeAxes({planeNorm})";
+                // 樓層資訊
+                try { PopulateLevels(ifcModel, data); } catch { }
                 return data;
             });
         }

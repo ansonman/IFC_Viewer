@@ -18,7 +18,8 @@ namespace IFC_Viewer_00.ViewModels
         private readonly SchematicService _service;
 
         public ObservableCollection<SchematicNodeView> Nodes { get; } = new();
-        public ObservableCollection<SchematicEdgeView> Edges { get; } = new();
+    public ObservableCollection<SchematicEdgeView> Edges { get; } = new();
+    public ObservableCollection<LevelLineView> LevelLines { get; } = new();
         // V1: 日誌文字顯示
         public ObservableCollection<string> Logs { get; } = new();
 
@@ -47,11 +48,13 @@ namespace IFC_Viewer_00.ViewModels
     public ICommand IncreaseLineWidthCommand { get; }
     public ICommand DecreaseLineWidthCommand { get; }
     public ICommand ToggleSnapCommand { get; }
+    public ICommand ToggleLevelsCommand { get; }
 
     // 視覺預設
     private double _defaultNodeSize = 8.0; // px
     private double _defaultEdgeThickness = 2.0; // px
     public bool SnapEnabled { get; private set; } = true;
+    public bool LevelsVisible { get; private set; } = true;
 
         public SchematicViewModel(SchematicService service, ISelectionService? selection = null)
         {
@@ -108,6 +111,12 @@ namespace IFC_Viewer_00.ViewModels
                 if (SnapEnabled) SnapToPixelGrid(Nodes);
                 LogVisualSettings();
             });
+            ToggleLevelsCommand = new SchematicCommand(_ =>
+            {
+                LevelsVisible = !LevelsVisible;
+                foreach (var lv in LevelLines) lv.Visible = LevelsVisible;
+                AddLog($"[View] Levels {(LevelsVisible ? "On" : "Off")}");
+            });
         }
 
         public async Task LoadAsync(IModel model)
@@ -128,6 +137,7 @@ namespace IFC_Viewer_00.ViewModels
             if (data == null) return Task.CompletedTask;
             Nodes.Clear();
             Edges.Clear();
+            LevelLines.Clear();
             // 直接將 data.Nodes 轉成 NodeView
             var map = new Dictionary<SchematicNode, SchematicNodeView>();
             foreach (var n in data.Nodes)
@@ -164,6 +174,7 @@ namespace IFC_Viewer_00.ViewModels
             {
                 nv.Node.Position2D = new System.Windows.Point(nv.X, nv.Y);
             }
+            BuildLevelLines(data);
             LogVisualSettings();
             return Task.CompletedTask;
         }
@@ -320,6 +331,7 @@ namespace IFC_Viewer_00.ViewModels
 
             Nodes.Clear();
             Edges.Clear();
+            LevelLines.Clear();
 
             var nodeMap = new Dictionary<object, SchematicNodeView>();
             foreach (var n in data.Nodes)
@@ -366,6 +378,8 @@ namespace IFC_Viewer_00.ViewModels
             {
                 nv.Node.Position2D = new System.Windows.Point(nv.X, nv.Y);
             }
+            // 建立樓層線（若有）
+            BuildLevelLines(data);
             LogVisualSettings();
 
             return Task.CompletedTask;
@@ -378,6 +392,7 @@ namespace IFC_Viewer_00.ViewModels
 
             Nodes.Clear();
             Edges.Clear();
+            LevelLines.Clear();
 
             // 1) 先將 data.Nodes 轉為 NodeView（先用原始 Position2D）
             var nodeMap = new Dictionary<object, SchematicNodeView>();
@@ -425,6 +440,7 @@ namespace IFC_Viewer_00.ViewModels
                 };
                 Edges.Add(ev);
             }
+            BuildLevelLines(data);
         }
 
         private void BuildFromData(SchematicData data)
@@ -659,6 +675,23 @@ namespace IFC_Viewer_00.ViewModels
         public void Execute(object? parameter) => _execute(parameter);
     }
 
+    public class LevelLineView : INotifyPropertyChanged
+    {
+        public string Name { get; set; } = string.Empty;
+        public double Elevation { get; set; }
+        private double _y;
+        public double Y { get => _y; set { if (Math.Abs(_y - value) > double.Epsilon) { _y = value; OnPropertyChanged(nameof(Y)); OnPropertyChanged(nameof(LabelY)); } } }
+        public double X1 { get; set; }
+        public double X2 { get; set; }
+        public double LabelX { get; set; }
+        public double LabelY { get; set; }
+        private bool _visible = true;
+        public bool Visible { get => _visible; set { if (_visible != value) { _visible = value; OnPropertyChanged(nameof(Visible)); } } }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+        protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    }
+
     // ===== 內部輔助：分色與佈局 =====
     public partial class SchematicViewModel
     {
@@ -796,6 +829,64 @@ namespace IFC_Viewer_00.ViewModels
                 v.X = (v.X - minX) * scale + padding;
                 v.Y = (v.Y - minY) * scale + padding;
             }
+        }
+
+        // 建立樓層線視圖（需要在節點座標最終定案之後呼叫）
+        private void BuildLevelLines(SchematicData data)
+        {
+            try
+            {
+                LevelLines.Clear();
+                if (data?.Levels == null || data.Levels.Count == 0 || Nodes.Count == 0) return;
+
+                // 使用 3D Z 與目前 2D Y 的線性對應（最小平方法）
+                var pts = Nodes.Select(n => (Z: n.Node.Position3D.Z, Y: n.Y)).ToList();
+                double m = pts.Count;
+                double sumZ = pts.Sum(p => p.Z);
+                double sumY = pts.Sum(p => p.Y);
+                double sumZZ = pts.Sum(p => p.Z * p.Z);
+                double sumZY = pts.Sum(p => p.Z * p.Y);
+                double denom = m * sumZZ - sumZ * sumZ;
+                double a = 0, b = 0; // Y ≈ a*Z + b
+                if (Math.Abs(denom) > 1e-9)
+                {
+                    a = (m * sumZY - sumZ * sumY) / denom;
+                    b = (sumY - a * sumZ) / m;
+                }
+                else
+                {
+                    // 退化：以 Z/Y 範圍比例對應
+                    double minZ = Nodes.Min(v => v.Node.Position3D.Z);
+                    double maxZ = Nodes.Max(v => v.Node.Position3D.Z);
+                    double minY = Nodes.Min(v => v.Y);
+                    double maxY = Nodes.Max(v => v.Y);
+                    double rz = Math.Max(1e-9, maxZ - minZ);
+                    double ry = Math.Max(1e-9, maxY - minY);
+                    a = ry / rz;
+                    b = minY - a * minZ;
+                }
+
+                double contentMinX = Nodes.Min(v => v.X);
+                double contentMaxX = Nodes.Max(v => v.X);
+                double labelX = contentMinX + 6; // 文字靠左側
+
+                foreach (var lv in data.Levels.OrderBy(l => l.Elevation))
+                {
+                    double y = a * lv.Elevation + b;
+                    LevelLines.Add(new LevelLineView
+                    {
+                        Name = string.IsNullOrWhiteSpace(lv.Name) ? $"Level {lv.Elevation:0.##}" : lv.Name,
+                        Elevation = lv.Elevation,
+                        Y = y,
+                        X1 = contentMinX,
+                        X2 = contentMaxX,
+                        LabelX = labelX,
+                        LabelY = y - 10,
+                        Visible = LevelsVisible
+                    });
+                }
+            }
+            catch { }
         }
 
         private enum ProjectionPlane { XY, XZ, YZ }
