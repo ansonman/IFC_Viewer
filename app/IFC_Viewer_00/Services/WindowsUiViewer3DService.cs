@@ -542,7 +542,8 @@ namespace IFC_Viewer_00.Services
             System.Windows.Media.Color? lineColor = null,
             double lineThickness = 2.0,
             System.Windows.Media.Color? pointColor = null,
-            double pointSize = 3.0)
+            double pointSize = 3.0,
+            bool applyCameraOffset = false)
         {
             if (_viewer == null) return; // reflective path not supported for overlay
             if (axes == null) return;
@@ -552,25 +553,8 @@ namespace IFC_Viewer_00.Services
                 if (viewport == null) return;
                 EnsureOverlayRoot(viewport);
 
-                // 為避免被模型遮擋：沿相機視線方向施加極小偏移（單位隨相機距離縮放）
+                // 準確呈現：不做任何視線偏移，直接使用原始世界座標
                 var offset = new Vector3D(0, 0, 0);
-                try
-                {
-                    var cam = viewport.Camera as ProjectionCamera;
-                    if (cam != null)
-                    {
-                        var look = cam.LookDirection;
-                        var len = look.Length;
-                        if (len > 1e-9)
-                        {
-                            var dir = new Vector3D(look.X / len, look.Y / len, look.Z / len);
-                            var eps = Math.Max(1e-6, len * 0.002);
-                            eps = Math.Min(eps, len * 0.05);
-                            offset = new Vector3D(dir.X * eps, dir.Y * eps, dir.Z * eps);
-                        }
-                    }
-                }
-                catch { }
 
                 _overlayLines ??= new LinesVisual3D();
                 _overlayLines.Thickness = Math.Max(0.5, lineThickness);
@@ -596,7 +580,6 @@ namespace IFC_Viewer_00.Services
                 }
 
                 AttachOverlayIfNeeded(viewport);
-                try { viewport.InvalidateVisual(); } catch { }
             }
             catch (Exception ex)
             {

@@ -33,7 +33,8 @@ namespace IFC_Viewer_00.Services
             Color? lineColor = null,
             double lineThickness = 2.0,
             Color? pointColor = null,
-            double pointSize = 3.0
+            double pointSize = 3.0,
+              bool applyCameraOffset = false
         ) { /* no-op */ }
 
         public void ClearOverlay() { /* no-op */ }

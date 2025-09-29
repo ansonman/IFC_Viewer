@@ -14,6 +14,9 @@
   - Services/（規劃/擴充中）
     - IViewer3DService.cs、WindowsUiViewer3DService.cs、StrongWindowsUiViewer3DService.cs、StubViewer3DService.cs：3D 服務抽象與實作（集合高亮、Isolate/Hide/ShowAll、UpdateHiddenList、HitTest）。
     - IfcStringHelper.cs：xBIM 型別/值 → string 的統一轉換。
+    - Overlay（Strong）：`StrongWindowsUiViewer3DService` 提供 3D Overlay（管線中線/端點）顯示，含線寬/點大小即時調整與自動透明（顯示時將模型不透明度降至 ~0.3；清除後恢復）。
+      - HelixViewport3D 解析：支援多名稱屬性/欄位（Viewport/Viewport3D/ViewPort/HelixViewport/HelixViewport3D）與視覺樹遞迴搜尋（VisualTreeHelper）保底。
+      - 診斷輸出：EnsureViewport* 解析路徑、OverlayRoot 附掛成功與 Children 數量（LinePoints/PointCount）。詳見 `Debug Report.md` 的「F. 3D Overlay 與透明度」。
   - Models/
     - SpatialNode.cs、ElementProperty.cs：TreeView 與屬性面板資料模型（含 IsVisible/IsSelected 以支援多選與可見性）。
 

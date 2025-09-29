@@ -41,6 +41,18 @@
   - 資料去重：對高亮 labels 去重，減少集合操作與 UI 更新。
 - 效果：3D 單擊高亮回應更即時、更順滑，特別是連續點擊或多選情境。
 
+### 3D Overlay：管線中線與端點（2025-09-28）
+- 功能：在 3D 視圖疊加橙紅色中線（LinesVisual3D）與黑色端點（PointsVisual3D），用於快速檢視管路走向與端點。
+- 使用：按下「3D 顯示中線/端點」按鈕即可顯示；再按一次或按「清除 3D Overlay」可移除。
+- 控制：提供「線寬」與「點大小」滑桿，調整即時生效。
+- 透明度：顯示 overlay 時自動將模型不透明度降至 ~0.3；清除 overlay 後恢復原值。
+- 相容性與解析：Strong 3D 服務會以多路徑解析 HelixViewport3D（屬性/欄位名稱：Viewport/Viewport3D/ViewPort/HelixViewport/HelixViewport3D；必要時沿視覺樹向下搜尋），確保 overlay 可正確掛載。
+- 診斷：若未見 overlay，請查看 `viewer3d.log` 是否出現：
+  - `[StrongViewer] EnsureViewport: ...`（含 found via ... 或 NOT found）
+  - `[StrongViewer] OverlayRoot attached to viewport.`
+  - `[StrongViewer] Overlay children updated. LinePoints=..., PointCount=...`
+  若 LinePoints/PointCount 為 0，表示資料來源為空；若找不到 HelixViewport3D，請回報視圖控制項結構以擴充解析。
+
 ## 技術棧
 - .NET 8 WPF (net8.0-windows)
 - xBIM: Xbim.Presentation (WindowsUI), Xbim.Essentials, Xbim.ModelGeometry.Scene, Xbim.Geometry.Engine.Interop

@@ -70,6 +70,8 @@ namespace IFC_Viewer_00.ViewModels
     public RelayCommand GenerateSchematicV1Command { get; }
     public RelayCommand GeneratePipeAxesCommand { get; }
     public RelayCommand ShowPipeOverlay3DCommand { get; }
+    public RelayCommand ShowTestOverlay3DCommand { get; }
+    public RelayCommand ShowAxesOverlay3DCommand { get; }
     public RelayCommand ClearOverlay3DCommand { get; }
 
         public MainViewModel() : this(new StubViewer3DService(), new SelectionService()) { }
@@ -84,6 +86,8 @@ namespace IFC_Viewer_00.ViewModels
             GenerateSchematicV1Command = new RelayCommand(async () => await OnGenerateSchematicV1Async());
             GeneratePipeAxesCommand = new RelayCommand(async () => await OnGeneratePipeAxesAsync());
             ShowPipeOverlay3DCommand = new RelayCommand(async () => await OnShowPipeOverlay3DAsync());
+            ShowTestOverlay3DCommand = new RelayCommand(OnShowTestOverlay3D);
+            ShowAxesOverlay3DCommand = new RelayCommand(() => OnShowAxesOverlay3D());
             ClearOverlay3DCommand = new RelayCommand(OnClearOverlay3D);
 
             IsolateSelectionCommand = new RelayCommand(OnIsolateSelection);
@@ -529,6 +533,99 @@ namespace IFC_Viewer_00.ViewModels
             catch (Exception ex)
             {
                 MessageBox.Show($"3D Overlay 失敗: {ex.Message}", "3D Overlay", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // 顯示測試用 3D Overlay：在 (0,0,0) 畫一個黑點，並從 (0,0,0) 沿 +Z 畫一條 1000m 的黑線
+        private void OnShowTestOverlay3D()
+        {
+            try
+            {
+                if (_viewer3D == null)
+                {
+                    MessageBox.Show("3D 服務未初始化", "3D Overlay", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                // 單位：xBIM 幾何通常以 mm 表示（OneMetre=1000），這裡用 1000m = 1,000,000 mm
+                var origin = new Point3D(0, 0, 0);
+                var endZ = new Point3D(0, 0, 1_000_000);
+                var axes = new List<(Point3D Start, Point3D End)> { (origin, endZ) };
+                var endpoints = new List<Point3D> { origin };
+                _viewer3D.ShowOverlayPipeAxes(
+                    axes,
+                    endpoints,
+                    lineColor: System.Windows.Media.Colors.Black,
+                    lineThickness: Math.Max(0.5, OverlayLineThickness),
+                    pointColor: System.Windows.Media.Colors.Black,
+                    pointSize: Math.Max(1.0, OverlayPointSize));
+
+                // 顯示 Overlay 後，與正式流程一致：自動降不透明度，清除時還原
+                if (_opacityBeforeOverlay == null)
+                    _opacityBeforeOverlay = ModelOpacity;
+                ModelOpacity = 0.3;
+                StatusMessage = "3D 測試 Overlay：原點黑點 + Z向 1000m 黑線";
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"3D 測試 Overlay 失敗: {ex.Message}", "3D Overlay", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // 顯示測試：三軸座標箭頭（原點出發）
+        private void OnShowAxesOverlay3D(double metres = 100)
+        {
+            try
+            {
+                if (_viewer3D == null)
+                {
+                    MessageBox.Show("3D 服務未初始化", "3D Overlay", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                // 以 mm 為單位：1m = 1000mm
+                var L = Math.Max(1.0, metres) * 1000.0;
+                var O = new Point3D(0, 0, 0);
+                var X = new Point3D(L, 0, 0);
+                var Y = new Point3D(0, L, 0);
+                var Z = new Point3D(0, 0, L);
+                var axes = new List<(Point3D Start, Point3D End)>
+                {
+                    (O, X), // X 紅
+                    (O, Y), // Y 綠
+                    (O, Z)  // Z 藍
+                };
+                var endpoints = new List<Point3D> { O, X, Y, Z };
+
+                // 我們用三次呼叫來分色繪製，先清一次 overlay 子項再加入，保持顯示一致
+                // X 紅
+                _viewer3D.ShowOverlayPipeAxes(new []{ (O, X) }, new []{ O, X },
+                    lineColor: System.Windows.Media.Colors.Red,
+                    lineThickness: Math.Max(0.5, OverlayLineThickness),
+                    pointColor: System.Windows.Media.Colors.Black,
+                    pointSize: Math.Max(1.0, OverlayPointSize),
+                    applyCameraOffset: false);
+                // Y 綠（在既有 overlay 上追加）
+                _viewer3D.ShowOverlayPipeAxes(new []{ (O, Y) }, new []{ Y },
+                    lineColor: System.Windows.Media.Colors.Green,
+                    lineThickness: Math.Max(0.5, OverlayLineThickness),
+                    pointColor: System.Windows.Media.Colors.Black,
+                    pointSize: Math.Max(1.0, OverlayPointSize),
+                    applyCameraOffset: false);
+                // Z 藍（在既有 overlay 上追加）
+                _viewer3D.ShowOverlayPipeAxes(new []{ (O, Z) }, new []{ Z },
+                    lineColor: System.Windows.Media.Colors.Blue,
+                    lineThickness: Math.Max(0.5, OverlayLineThickness),
+                    pointColor: System.Windows.Media.Colors.Black,
+                    pointSize: Math.Max(1.0, OverlayPointSize),
+                    applyCameraOffset: false);
+
+                if (_opacityBeforeOverlay == null)
+                    _opacityBeforeOverlay = ModelOpacity;
+                ModelOpacity = 0.3;
+                StatusMessage = $"3D 測試 Overlay：座標軸 X/Y/Z = {metres:0} m";
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"3D 測試座標軸失敗: {ex.Message}", "3D Overlay", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 

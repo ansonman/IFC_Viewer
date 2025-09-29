@@ -43,6 +43,8 @@
             <Button x:Name="BtnGenerateSchematicV1" Content="AS原理圖V1" Margin="8,0,0,0" Padding="10,4" Command="{Binding GenerateSchematicV1Command}" />
             <Button x:Name="BtnGeneratePipeAxes" Content="Pipe軸線" Margin="8,0,0,0" Padding="10,4" Command="{Binding GeneratePipeAxesCommand}" />
             <Button x:Name="BtnShowOverlay3D" Content="3D 顯示中線/端點" Margin="8,0,0,0" Padding="10,4" Command="{Binding ShowPipeOverlay3DCommand}" />
+            <Button x:Name="BtnShowTestOverlay3D" Content="3D 測試黑點/黑線" Margin="8,0,0,0" Padding="10,4" Command="{Binding ShowTestOverlay3DCommand}" />
+            <Button x:Name="BtnShowAxesOverlay3D" Content="3D 測試三軸箭頭" Margin="8,0,0,0" Padding="10,4" Command="{Binding ShowAxesOverlay3DCommand}" />
             <Button x:Name="BtnClearOverlay3D" Content="清除 3D Overlay" Margin="8,0,0,0" Padding="10,4" Command="{Binding ClearOverlay3DCommand}" />
         <StackPanel Orientation="Horizontal" Margin="16,0,0,0" VerticalAlignment="Center">
         <TextBlock Text="線寬:" Margin="8,0,4,0" VerticalAlignment="Center"/>

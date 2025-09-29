@@ -1,5 +1,32 @@
 # DEVELOPMENT LOG
 
+## 2025-09-28：3D Overlay 與 Viewport 解析強化
+
+完成事項：
+- 強化 `StrongWindowsUiViewer3DService` 的 HelixViewport3D 解析：
+  - 支援多個屬性/欄位名稱（Viewport/Viewport3D/ViewPort/HelixViewport/HelixViewport3D）。
+  - 若屬性/欄位均無，沿視覺樹（VisualTreeHelper）向下搜尋第一個 `HelixViewport3D`。
+  - 新增快取以避免重複解析，提升 HitTest 與 Overlay 的穩定性。
+- 3D Overlay（管線中線/端點）：
+  - 顯示時自動將模型不透明度降至 ~0.3，清除後恢復；提供「線寬 / 點大小」即時調整。
+  - 新增診斷輸出：EnsureViewport 解析路徑（found via property/field/visual tree 或 NOT found）、OverlayRoot 附掛成功、Overlay children 統計（LinePoints/PointCount）。
+- HitTest 調整：改用 `EnsureViewport()` 的結果做命中測試，避免 Viewport 名稱差異造成命中失效。
+
+文件同步：
+- README.md 新增「3D Overlay：管線中線與端點」章節（功能、使用、控制、透明度、診斷、相容性）。
+- FILE_ORG.md 的 Services 區塊補充 Overlay 能力、Viewport 解析與診斷 cross-reference。
+- Debug Report.md 增補「F. 3D Overlay 與透明度」驗收清單與診斷關鍵字。
+
+建置狀態：
+- Build：成功。
+- 警告：NU1701（HelixToolkit.Wpf、Xbim.* 為 .NET Framework 相容還原）；另有一則未使用欄位警告（可後續清理）。
+
+後續：
+- 執行期驗證 Overlay 可見性與透明度行為；若仍不可見，收集 EnsureViewport/Overlay children 訊息定位問題。
+- 視需要擴充反射式 `WindowsUiViewer3DService` 的 Viewport 解析與 Overlay 支援（目前僅 Strong 支援）。
+
+---
+
 ## 2025-09-24：V1 手動平面投影、Port 詳細診斷、顏色修復
 
 新增 / 調整：

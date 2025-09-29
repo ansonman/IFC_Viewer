@@ -31,12 +31,15 @@ namespace IFC_Viewer_00.Services
         private ModelVisual3D? _overlayRoot; // parent container
         private LinesVisual3D? _overlayLines;
         private PointsVisual3D? _overlayPoints;
+    // 原始世界座標快照：用於相機變更時重新套用偏移
+    private (Point3D Start, Point3D End)[]? _overlayAxesSrc;
+    private Point3D[]? _overlayEndpointsSrc;
+    private bool _overlayCameraSubscribed;
         // 快取以降低反射與視覺樹查詢成本
         private (MemberInfo mi, bool isProperty)? _selMemberCached;
         private (MemberInfo mi, bool isProperty)? _isoMemberCached;
         private (MemberInfo mi, bool isProperty)? _hidMemberCached;
         private HelixViewport3D? _viewportCached;
-        private bool _triedViewportCache;
         private static readonly string[] SelNames = new[] { "SelectedEntities", "HighlightedEntities", "SelectedInstances", "HighlightedInstances", "SelectedEntityLabels", "HighlightedEntityLabels", "Selection", "Selections", "Selected", "SelectedItems" };
         private static readonly string[] IsoNames = new[] { "IsolateInstances", "IsolatedInstances" };
         private static readonly string[] HidNames = new[] { "HiddenInstances", "HiddenEntities" };
@@ -236,6 +239,8 @@ namespace IFC_Viewer_00.Services
                 try { (_viewer as FrameworkElement)?.UpdateLayout(); } catch { }
                 // 清除既有 overlay 以避免殘留
                 try { ClearOverlay(); } catch { }
+                // 設定滑鼠手勢：將平移改為左鍵拖曳、旋轉改為右鍵拖曳（依使用者要求）
+                try { ConfigureMousePanToLeftButton(true); Trace.WriteLine("[StrongViewer] Mouse gestures configured: Pan=LeftDrag, Rotate=RightDrag."); } catch { }
             });
         }
 
@@ -872,7 +877,8 @@ namespace IFC_Viewer_00.Services
             System.Windows.Media.Color? lineColor = null,
             double lineThickness = 2.0,
             System.Windows.Media.Color? pointColor = null,
-            double pointSize = 3.0)
+            double pointSize = 3.0,
+            bool applyCameraOffset = false)
         {
             if (axes == null) return;
             RunOnUi(() =>
@@ -882,28 +888,65 @@ namespace IFC_Viewer_00.Services
                     var viewport = EnsureViewport();
                     if (viewport == null) return;
                     EnsureOverlayRoot(viewport);
-                    // 準確呈現：不做任何視線偏移，直接使用原始世界座標
-                    var offset = new Vector3D(0, 0, 0);
+                    // 將來源座標快照，供相機變更時重新套用偏移
+                    var axesArr = axes as (Point3D Start, Point3D End)[] ?? axes.ToArray();
+                    var endpointArr = endpoints as Point3D[] ?? endpoints?.ToArray();
+                    _overlayAxesSrc = axesArr;
+                    _overlayEndpointsSrc = endpointArr;
+
+                    // 計算疊加層包圍盒與相機微小偏移，避免與模型表面 Z-fighting 導致看不到
+                    var hasAnyPoint = axesArr.Length > 0 || (endpointArr?.Length ?? 0) > 0;
+                    Point3D? min = null, max = null;
+                    if (axesArr.Length > 0)
+                    {
+                        foreach (var (s, e) in axesArr)
+                        {
+                            min = MinPoint(min, s);
+                            max = MaxPoint(max, s);
+                            min = MinPoint(min, e);
+                            max = MaxPoint(max, e);
+                        }
+                    }
+                    if (endpointArr != null && endpointArr.Length > 0)
+                    {
+                        foreach (var p in endpointArr)
+                        {
+                            min = MinPoint(min, p);
+                            max = MaxPoint(max, p);
+                        }
+                    }
+                    var diag = 0.0;
+                    if (min.HasValue && max.HasValue)
+                    {
+                        diag = (max.Value - min.Value).Length;
+                    }
+                    // 取相機方向單位向量，將 overlay 幾何略為往相機方向推一點，減少被模型表面深度遮蔽
+                    var offset = applyCameraOffset ? ComputeOverlayOffset(viewport, diag, lineThickness) : new Vector3D(0,0,0);
+                    try
+                    {
+                        Trace.WriteLine($"[StrongViewer] Overlay bounds: min={(min.HasValue ? FormatP(min.Value) : "?")}, max={(max.HasValue ? FormatP(max.Value) : "?")}, diag={diag:F4}. CamLook={(viewport.Camera as ProjectionCamera)?.LookDirection}");
+                    }
+                    catch { }
 
                     // Build lines
                     _overlayLines ??= new LinesVisual3D();
                     _overlayLines.Thickness = Math.Max(0.5, lineThickness);
                     _overlayLines.Color = lineColor ?? System.Windows.Media.Colors.OrangeRed;
                     _overlayLines.Points = new Point3DCollection();
-                    foreach (var (s, e) in axes)
+                    foreach (var (s, e) in axesArr)
                     {
                         _overlayLines.Points.Add(new Point3D(s.X + offset.X, s.Y + offset.Y, s.Z + offset.Z));
                         _overlayLines.Points.Add(new Point3D(e.X + offset.X, e.Y + offset.Y, e.Z + offset.Z));
                     }
 
                     // Build points
-                    if (endpoints != null)
+                    if (endpointArr != null)
                     {
                         _overlayPoints ??= new PointsVisual3D();
                         _overlayPoints.Size = Math.Max(0.5, pointSize);
                         _overlayPoints.Color = pointColor ?? System.Windows.Media.Colors.Black;
                         var pts = new Point3DCollection();
-                        foreach (var p in endpoints)
+                        foreach (var p in endpointArr)
                         {
                             pts.Add(new Point3D(p.X + offset.X, p.Y + offset.Y, p.Z + offset.Z));
                         }
@@ -912,6 +955,10 @@ namespace IFC_Viewer_00.Services
 
                     // Attach to visual tree
                     AttachOverlayIfNeeded(viewport);
+                    // 視需要訂閱相機變更：若不套相機偏移，則取消訂閱以避免多餘重建
+                    if (applyCameraOffset) TrySubscribeCameraChanged(viewport); else TryUnsubscribeCameraChanged(viewport);
+                    // 強制刷新（有些環境需要顯式 Invalidate/Update 才會立即渲染 Overlay）
+                    try { ForceViewportRefresh(viewport); } catch { }
                 }
                 catch { }
             });
@@ -925,25 +972,67 @@ namespace IFC_Viewer_00.Services
                 {
                     // 1) 正規化輸入
                     opacity = Math.Max(0.0, Math.Min(1.0, opacity));
+                    try { Trace.WriteLine($"[StrongViewer] SetModelOpacity requested: {opacity:F3}"); } catch { }
 
                     // 2) 嘗試多條路徑設定透明度
-                    try { _viewer.ModelOpacity = opacity; } catch { }
-                    try { _viewer.SetOpacity(opacity); } catch { }
+                    bool applied = false;
+                    try { _viewer.ModelOpacity = opacity; applied = true; Trace.WriteLine("[StrongViewer] Set ModelOpacity property."); } catch { }
+                    if (!applied)
+                    {
+                        try { _viewer.SetOpacity(opacity); applied = true; Trace.WriteLine("[StrongViewer] Called SetOpacity(double 0..1)."); } catch { }
+                    }
                     // 某些版本的 SetOpacity 以 0~100 百分比（int/float/double）為參數，補充嘗試
-                    try { _viewer.GetType().GetMethod("SetOpacity", BindingFlags.Public | BindingFlags.Instance, null, new[] { typeof(int) }, null)?.Invoke(_viewer, new object[] { (int)Math.Round(opacity * 100) }); } catch { }
-                    try { _viewer.GetType().GetMethod("SetOpacity", BindingFlags.Public | BindingFlags.Instance, null, new[] { typeof(float) }, null)?.Invoke(_viewer, new object[] { (float)(opacity * 100) }); } catch { }
+                    if (!applied)
+                    {
+                        try
+                        {
+                            var mi = _viewer.GetType().GetMethod("SetOpacity", BindingFlags.Public | BindingFlags.Instance, null, new[] { typeof(int) }, null);
+                            if (mi != null) { mi.Invoke(_viewer, new object[] { (int)Math.Round(opacity * 100) }); applied = true; Trace.WriteLine("[StrongViewer] Called SetOpacity(int 0..100)."); }
+                        }
+                        catch { }
+                        if (!applied)
+                        {
+                            try
+                            {
+                                var miF = _viewer.GetType().GetMethod("SetOpacity", BindingFlags.Public | BindingFlags.Instance, null, new[] { typeof(float) }, null);
+                                if (miF != null) { miF.Invoke(_viewer, new object[] { (float)(opacity * 100) }); applied = true; Trace.WriteLine("[StrongViewer] Called SetOpacity(float 0..100)."); }
+                            }
+                            catch { }
+                        }
+                    }
 
                     // 3) 若控制項提供透明渲染開關，啟用之（容錯）
                     TrySetBoolPropertyIfExists(_viewer, "EnableTransparency", true);
                     TrySetBoolPropertyIfExists(_viewer, "IsTransparent", true);
 
                     // 4) 重新載入以確保材質更新（保留相機與選取）
-                    TryInvokeReloadModelWithOptionsOnControl(_viewer,
+                    bool reloaded = TryInvokeReloadModelWithOptionsOnControl(_viewer,
                         new[] { "ViewPreserveCameraPosition", "ViewPreserveSelection", "View" });
-                    // 輕量刷新
+                    if (!reloaded)
+                    {
+                        // 備援的無參數 Reload
+                        if (!InvokeIfExists(_viewer, "ReloadModel"))
+                        {
+                            // 其他刷新選項
+                            InvokeIfExists(_viewer, "Refresh");
+                            InvokeIfExists(_viewer, "RefreshScene");
+                            InvokeIfExists(_viewer, "RefreshView");
+                            InvokeIfExists(_viewer, "RefreshViewport");
+                            InvokeIfExists(_viewer, "RebuildModel");
+                            InvokeIfExists(_viewer, "Redraw");
+                        }
+                    }
+                    // 輕量刷新（控制項與視口）
+
                     try { InvokeIfExists(_viewer, "RefreshView"); } catch { }
                     try { _viewer.InvalidateVisual(); } catch { }
                     try { _viewer.UpdateLayout(); } catch { }
+                    try
+                    {
+                        var vp = EnsureViewport();
+                        if (vp != null) ForceViewportRefresh(vp);
+                    }
+                    catch { }
                 }
                 catch { }
             });
@@ -957,12 +1046,15 @@ namespace IFC_Viewer_00.Services
                 {
                     var viewport = EnsureViewport();
                     if (viewport == null) return;
+                    TryUnsubscribeCameraChanged(viewport);
                     if (_overlayRoot != null)
                     {
                         try { viewport.Children.Remove(_overlayRoot); } catch { }
                         _overlayRoot = null;
                         _overlayLines = null;
                         _overlayPoints = null;
+                        _overlayAxesSrc = null;
+                        _overlayEndpointsSrc = null;
                     }
                 }
                 catch { }
@@ -972,7 +1064,6 @@ namespace IFC_Viewer_00.Services
         private HelixViewport3D? EnsureViewport()
         {
             if (_viewportCached != null) return _viewportCached;
-            _triedViewportCache = true;
             HelixViewport3D? vp = null;
             try
             {
@@ -1094,6 +1185,8 @@ namespace IFC_Viewer_00.Services
             {
                 viewport.Children.Add(_overlayRoot);
                 try { Trace.WriteLine("[StrongViewer] OverlayRoot attached to viewport."); } catch { }
+                // 第一次加入 Overlay，將視角 ZoomExtents 以確保可見（僅此一次，避免打擾使用者之後的操作）
+                try { viewport.ZoomExtents(); Trace.WriteLine("[StrongViewer] ZoomExtents invoked after first overlay attach."); } catch { }
             }
             // Rebuild children
             try { _overlayRoot.Children.Clear(); } catch { }
@@ -1104,6 +1197,162 @@ namespace IFC_Viewer_00.Services
                 var lc = _overlayLines?.Points?.Count ?? 0;
                 var pc = _overlayPoints?.Points?.Count ?? 0;
                 Trace.WriteLine($"[StrongViewer] Overlay children updated. LinePoints={lc}, PointCount={pc}.");
+            }
+            catch { }
+        }
+
+        private Vector3D ComputeOverlayOffset(HelixViewport3D viewport, double diag, double lineThickness)
+        {
+            var offset = new Vector3D(0, 0, 0);
+            try
+            {
+                if (viewport.Camera is ProjectionCamera pc)
+                {
+                    var dir = pc.LookDirection;
+                    if (dir.Length > 1e-9)
+                    {
+                        dir.Normalize();
+                        var eps = Math.Max(lineThickness * 0.25, Math.Max(1e-6, diag * 1e-5));
+                        offset = -dir * eps;
+                    }
+                }
+            }
+            catch { }
+            return offset;
+        }
+
+        private void TrySubscribeCameraChanged(HelixViewport3D viewport)
+        {
+            if (_overlayCameraSubscribed) return;
+            try
+            {
+                viewport.CameraChanged += Viewport_CameraChanged;
+                _overlayCameraSubscribed = true;
+            }
+            catch { }
+        }
+
+        private void TryUnsubscribeCameraChanged(HelixViewport3D viewport)
+        {
+            if (!_overlayCameraSubscribed) return;
+            try
+            {
+                viewport.CameraChanged -= Viewport_CameraChanged;
+            }
+            catch { }
+            _overlayCameraSubscribed = false;
+        }
+
+        private void Viewport_CameraChanged(object? sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (sender is not HelixViewport3D vp) return;
+                if ((_overlayAxesSrc == null || _overlayAxesSrc.Length == 0) && (_overlayEndpointsSrc == null || _overlayEndpointsSrc.Length == 0)) return;
+                // 重新以最新相機方向計算偏移並刷新幾何
+                var min = (Point3D?)null; var max = (Point3D?)null;
+                if (_overlayAxesSrc != null)
+                {
+                    foreach (var (s, endPt) in _overlayAxesSrc)
+                    {
+                        min = MinPoint(min, s); max = MaxPoint(max, s);
+                        min = MinPoint(min, endPt); max = MaxPoint(max, endPt);
+                    }
+                }
+                if (_overlayEndpointsSrc != null)
+                {
+                    foreach (var p in _overlayEndpointsSrc)
+                    {
+                        min = MinPoint(min, p); max = MaxPoint(max, p);
+                    }
+                }
+                double diag = 0.0; if (min.HasValue && max.HasValue) diag = (max.Value - min.Value).Length;
+                var lt = _overlayLines?.Thickness ?? 2.0;
+                var ps = _overlayPoints?.Size ?? 3.0;
+                var offset = ComputeOverlayOffset(vp, diag, lt);
+
+                if (_overlayLines != null && _overlayAxesSrc != null)
+                {
+                    var pts = new Point3DCollection();
+                    foreach (var (s, endPt) in _overlayAxesSrc)
+                    {
+                        pts.Add(new Point3D(s.X + offset.X, s.Y + offset.Y, s.Z + offset.Z));
+                        pts.Add(new Point3D(endPt.X + offset.X, endPt.Y + offset.Y, endPt.Z + offset.Z));
+                    }
+                    _overlayLines.Points = pts;
+                }
+                if (_overlayPoints != null && _overlayEndpointsSrc != null)
+                {
+                    var pts2 = new Point3DCollection();
+                    foreach (var p in _overlayEndpointsSrc)
+                    {
+                        pts2.Add(new Point3D(p.X + offset.X, p.Y + offset.Y, p.Z + offset.Z));
+                    }
+                    _overlayPoints.Points = pts2;
+                }
+                ForceViewportRefresh(vp);
+            }
+            catch { }
+        }
+
+        // 滑鼠手勢設定：將「旋轉」改為左鍵拖曳，「平移」改為右鍵拖曳（依使用者要求）
+        public void ConfigureMousePanToLeftButton(bool enable)
+        {
+            RunOnUi(() =>
+            {
+                try
+                {
+                    var vp = EnsureViewport();
+                    if (vp == null) return;
+                    if (enable)
+                    {
+                        // 啟用：左鍵=旋轉、右鍵=平移
+                        vp.RotateGesture = new System.Windows.Input.MouseGesture(System.Windows.Input.MouseAction.LeftClick);
+                        vp.PanGesture = new System.Windows.Input.MouseGesture(System.Windows.Input.MouseAction.RightClick);
+                    }
+                    else
+                    {
+                        // 還原另一組常見預設：左鍵=平移、右鍵=旋轉（若需要）
+                        vp.PanGesture = new System.Windows.Input.MouseGesture(System.Windows.Input.MouseAction.LeftClick);
+                        vp.RotateGesture = new System.Windows.Input.MouseGesture(System.Windows.Input.MouseAction.RightClick);
+                    }
+                }
+                catch { }
+            });
+        }
+
+        private static Point3D MinPoint(Point3D? current, Point3D p)
+        {
+            if (!current.HasValue) return p;
+            return new Point3D(
+                Math.Min(current.Value.X, p.X),
+                Math.Min(current.Value.Y, p.Y),
+                Math.Min(current.Value.Z, p.Z));
+        }
+
+        private static Point3D MaxPoint(Point3D? current, Point3D p)
+        {
+            if (!current.HasValue) return p;
+            return new Point3D(
+                Math.Max(current.Value.X, p.X),
+                Math.Max(current.Value.Y, p.Y),
+                Math.Max(current.Value.Z, p.Z));
+        }
+
+        private static string FormatP(Point3D p) => $"({p.X:F3},{p.Y:F3},{p.Z:F3})";
+
+        // 在某些電腦/顯示卡組合下，視覺樹加入/更新 3D 子項後需要顯式刷新
+        private void ForceViewportRefresh(HelixViewport3D viewport)
+        {
+            try { viewport.InvalidateVisual(); } catch { }
+            try { viewport.UpdateLayout(); } catch { }
+            try
+            {
+                if (viewport.Viewport is UIElement ve)
+                {
+                    try { ve.InvalidateVisual(); } catch { }
+                    try { ve.UpdateLayout(); } catch { }
+                }
             }
             catch { }
         }

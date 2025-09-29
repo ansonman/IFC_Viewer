@@ -1,3 +1,149 @@
+# IFC Viewer 透明度診斷報告 v1（2025-09-29）
+
+> 主題：DrawingControl3D 不透明度（ModelOpacity）設定偶發無效/延遲問題
+
+## 摘要
+
+- 現象：在 .NET 8 + xBIM WindowsUI + HelixToolkit 的 IFC Viewer 中，呼叫 `SetModelOpacity` 調整 `DrawingControl3D` 透明度，有時未立即生效或被後續流程覆蓋。
+- 主要發現：
+  - 控制項存在且可寫入 `ModelOpacity`；另有 `SetOpacity(double)` 可用（反射確認）。
+  - 設定後已觸發多條刷新路徑與 `ReloadModel(ViewPreserveCameraPosition)`；偶出現反射呼叫例外但後續仍成功刷新。
+  - Overlay 顯示時已自動降至 ~0.3 並附掛成功；視口解析偶有時序延遲（先 NOT found 後 found）。
+  - 已新增：首次附掛 Overlay 自動 ZoomExtents、Overlay 幾何沿相機方向極小偏移，降低 Z-fighting 造成的「看起來沒變化/看不到黑點」。
+
+## 診斷步驟執行
+
+### a. 檢查控制項屬性與版本
+- 作法：反射列舉 `DrawingControl3D` 屬性/方法。
+- 證據（log 節錄）：
+  - `... P ModelOpacity:Double (CanWrite=True) ...`
+  - `... M get_ModelOpacity() | M set_ModelOpacity(Double) | M SetOpacity(Double) ...`
+- 結論：`ModelOpacity` 存在且可寫，版本相容（假設 xBIM 6.x）。
+
+### b. 驗證刷新機制
+- 作法：設定 `ModelOpacity` 後嘗試 `ReloadModel(ModelRefreshOptions.ViewPreserveCameraPosition|View|None)`，備援多種 `Refresh*` 與視口 Invalidate/Update。
+- 證據（log 節錄）：
+  - `SetModelOpacity requested: 0.300`
+  - `Set ModelOpacity property.`
+  - 多次：`ReloadModel(ViewPreserveCameraPosition) invoked (control-nested enum).`
+  - 偶見：`TryInvokeReloadModelWithOptionsOnControl failed: Exception has been thrown by the target of an invocation.`
+- 結論：刷新有觸發；偶發反射例外後仍有後續成功刷新，屬相容性/時序非致命。
+
+### c. 測試 Overlay 情境
+- 作法：顯示中線/端點時自動降不透明度，並附掛 Overlay 至 `HelixViewport3D`；首次附掛自動 `ZoomExtents()`。
+- 證據（log 節錄）：
+  - `EnsureViewport: found via property 'Viewport'.`
+  - `OverlayRoot attached to viewport.`
+  - `Overlay children updated. LinePoints=8, PointCount=8.`
+  - `SetModelOpacity requested: 0.300` → `Set ModelOpacity property.`
+- 補強：已加入 Overlay 幾何相機方向 epsilon 偏移，減少 Z-fighting。
+- 結論：Overlay 與透明度聯動可運作，視口解析偶有延遲。
+
+### d. UI 執行緒與時序檢查
+- 作法：所有操作均封裝 `RunOnUi`；必要時可加 Dispatcher 延遲以避開模型載入重建。
+- 證據：`EnsureViewport` 部分時機先 `HelixViewport3D NOT found`，稍後又 `found`，顯示視覺樹初始化中的自然延遲。
+- 結論：UI 執行緒正確；時序可透過延遲補刷再強化。
+
+### e. 完整煙霧測試（模擬）
+- 作法：載入 IFC → 手動設 `ModelOpacity=0.5` → 觀察畫面與 log。
+- 預期（依現有 log 模式）：
+  - `SetModelOpacity requested: 0.500`、`Set ModelOpacity property.` 隨後多次 `ReloadModel(ViewPreserveCameraPosition)` 與 `Refresh*`。
+- 結論：應可穩定生效；若仍偶發延遲，屬渲染與重建時序非 API 缺失。
+
+## 可能原因分析（由高到低）
+
+1. 視覺樹/視口解析時序造成的刷新落空（高）
+   - 證據：`EnsureViewport: HelixViewport3D NOT found.` → 稍後 `found via property 'Viewport'`。
+   - 解讀：在視口尚未穩定時設定透明度，可能被後續載入/重建覆蓋或延遲反映。
+
+2. 透明材質重建時機差異（中）
+   - 證據：大量 `ReloadModel(ViewPreserveCameraPosition)` 與 `Refresh*`；偶發 Invocation 例外後仍恢復。
+   - 解讀：部分版本/狀態需更完整重建；已以多條刷新路徑補強。
+
+3. Overlay 與模型表面 Z-fighting（中）
+   - 證據：未偏移時，透明度提升更容易與表面同深度，造成「看似沒變」。
+   - 解讀：已加入相機方向 epsilon 偏移降低風險。
+
+4. `ReloadModel` enum 相容性（低-中）
+   - 證據：`TryInvokeReloadModelWithOptionsOnControl failed: ...`。
+   - 解讀：跨版本名稱/值不一致；已有備援刷新，影響有限。
+
+## 建議解決方案
+
+### 短期（已佈署/可立即納入）
+- 保證 UI 執行緒、強化刷新與 Helix 視口 Invalidate/Update（已存在）。
+- 首次附掛 Overlay 自動 `ZoomExtents()`（已加入）。
+- Overlay 幾何沿相機方向極小偏移（已加入）。
+- 加入透明度、視口解析、Overlay 子項等診斷（已存在）。
+- 追加延遲補刷（建議，低風險）：
+  - 在 `SetModelOpacity` 現有刷新完成後，使用 Dispatcher.Background 再觸發一次 `ReloadModel(ViewPreserveCameraPosition|View)` 與 `InvalidateVisual()`，避免與載入重建競爭。
+
+示例片段（延遲補刷，片段）：
+
+```csharp
+// 尾端補一個 Background 延遲，避開載入重建的時序
+var dispatcher = (_viewer as FrameworkElement)?.Dispatcher;
+dispatcher?.BeginInvoke(() =>
+{
+    TryInvokeReloadModelWithOptionsOnControl(_viewer, new[] { "ViewPreserveCameraPosition", "View" });
+    try { _viewer.InvalidateVisual(); } catch { }
+}, System.Windows.Threading.DispatcherPriority.Background);
+```
+
+### 長期
+- 針對 `ModelRefreshOptions` 做啟動期反射列舉，建立版本對應表，避免 Invocation 例外。
+- 提供 UI「透明度應用中…」指示（大模型時 1–2 個渲染週期），降低誤判。
+- 若版本支持，統一路徑改以 `ModelOpacity` 屬性為準，讀寫後比較差異做重試。
+
+## 額外註記
+
+- 假設環境：.NET 8、xBIM 6.x、HelixToolkit.Wpf + Xbim.Presentation（部分為 .NET Framework 相容組件）。
+- 作業日誌位置：`app/IFC_Viewer_00/bin/Release/net8.0-windows/viewer3d.log`（或 Debug 對應資料夾）。
+- 若仍遇到「透明度偶發無效」，請提供發生當下的 log 末端 200 行（需包含 `SetModelOpacity`、`ReloadModel`、`EnsureViewport` 與 `Overlay` 關鍵行）。
+
+---
+
+## 2025-09-29 後續更新：旋轉視角下 Overlay 顯示不一致與滑鼠手勢調整
+
+### 背景與問題
+- 現象：3D 視角旋轉時，Overlay（中線/端點、測試黑點/黑線、三軸）在不同角度下顯示略有差異，甚至出現「看不到/忽隱忽現」。
+- 原因：我們為避免模型表面與 Overlay 之間的 Z-fighting，在繪製 Overlay 前，會沿著「相機的 LookDirection」加上一個極小偏移 ε。過去此偏移僅在 Overlay 顯示當下計算一次；當你旋轉視角後，相機方向改變，但 Overlay 仍使用舊方向的偏移，導致不同角度下的結果不一致。
+
+### 修正內容（已佈署）
+1) 相機變更即時重算偏移
+  - 在 `StrongWindowsUiViewer3DService` 訂閱 `HelixViewport3D.CameraChanged`。
+  - 保留 Overlay 原始世界座標（未偏移快照），當相機方向改變時，重新計算 ε 並用新的偏移重建線段/點集合；最後強制刷新視口。
+  - 結果：無論怎麼旋轉，Overlay 都穩定且可見，不會因視角不同而消失或跳動。
+
+2) 滑鼠手勢符合需求
+  - 預設啟用：左鍵拖曳＝旋轉、右鍵拖曳＝平移（在載入模型後自動套用）。
+  - 可視需要提供 UI 切換開關或設定檔控制；目前程式已提供 `ConfigureMousePanToLeftButton(bool)` 介面可切換。
+
+### 驗證步驟
+- 載入 IFC 後，按「3D 測試黑點/黑線」與「3D 測試三軸箭頭」。
+- 使用滑鼠：左鍵旋轉、右鍵平移，反覆改變視角。
+- 觀察 Overlay 在各角度皆可見且穩定；`viewer3d.log` 可看到 `OverlayRoot attached to viewport.`、`Overlay children updated...`，以及相機變更後 Overlay 會被重建與刷新。
+
+### 相關程式位置（摘要）
+- `app/IFC_Viewer_00/Services/StrongWindowsUiViewer3DService.cs`
+  - `ShowOverlayPipeAxes(...)`：快照原始座標、首次計算偏移並建立 Overlay。
+  - `Viewport_CameraChanged(...)`：相機方向改變時，重新計算偏移並更新 `LinesVisual3D.Points` 與 `PointsVisual3D.Points`。
+  - `ComputeOverlayOffset(...)`：依場景對角線與線寬計算 ε 並沿 LookDirection 推移。
+  - `ConfigureMousePanToLeftButton(bool)`：切換左旋右平移或相反配置。
+
+### 備註
+- 偏移 ε 很小，目的僅是避免深度競爭，不會讓幾何「看起來移位」。若需要更強或更弱的偏移，可與線寬或場景尺寸聯動微調（目前已與對角線、線寬做最小值取用）。
+
+### 補充：3D 測試黑點/黑線（已調整）
+- 內容：改為使用與三軸相同的三條軸線幾何（O→X、O→Y、O→Z），全部使用黑色；並在每條線的頭尾加上黑點，總點為 O、X、Y、Z。
+- 長度：預設 L = 100 m（內部單位 mm）。
+- 目的：讓「黑點/黑線」測試與「三軸」具有相同的幾何分佈，排除幾何尺度/分佈差異，專注比較顏色/對比與偏移 ε 對可視性的影響。
+- 驗證：
+  - 執行後 `viewer3d.log` 會看到 `Overlay children updated. LinePoints=6, PointCount=4`（三條線共 6 個線端點，四個黑點）。
+  - 旋轉（左鍵）與平移（右鍵）時仍應穩定可見；必要時可調高線寬/點大小以觀察對比差異。
+
+---
+
 ```markdown
 # IFC Viewer 除錯報告（同步 2025-09-28）
 
