@@ -1,7 +1,6 @@
 using System.Windows;
-using IFC_Viewer_00.ViewModels;
 
-namespace IFC_Viewer_00.Views
+namespace IFC_Viewer_00
 {
     /// <summary>
     /// MainWindow.xaml 的互動邏輯
@@ -12,6 +11,9 @@ namespace IFC_Viewer_00.Views
         public MainWindow()
         {
             InitializeComponent();
+            
+            // 設定 DataContext 為 MainViewModel 的新執行個體
+            // 這樣 XAML 中的綁定就能與 ViewModel 連接
             DataContext = new MainViewModel();
         }
     }

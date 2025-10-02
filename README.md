@@ -102,31 +102,26 @@
   2) 系統會：
      - 從兩段管件推導最佳 2D 投影平面（最小跨度軸剔除）。
      - 收集目標系統的 Ports（AssignsToGroup → 成員 HasPorts → 全模型 Ports 保底）。
+    # IFC_Viewer
      - 將 Ports 投影為 2D 黑點（6px）。
      - 依 `IfcRelConnectsPorts` 連結成對 Ports，繪製黑線（1.5px）。
   3) 視圖自動 Fit-to-Canvas（800x600、padding 20），可使用滑鼠滾輪縮放與中鍵平移；「重置視圖」與「重新布局」同樣可用。
 - 疑難排解：
-  - 只看到黑點、沒有邊線：可能模型沒有 `IfcRelConnectsPorts`（或兩端 Port 不在同一系統集合）；UI 會顯示提示 Banner。請開啟 `viewer3d.log` 或 Trace（專案已輸出統計：系統 Port 數、連線數）。
   - 完全沒有黑點：檢查 AssignsToGroup/HasPorts 是否為空；本流程仍會回退到「全模型 Ports」以保底。
 
 ### AS 原理圖 V1：手動平面 + 全系統 Ports 點雲（2025-09-24）
 - 目的：快速以人工指定平面檢視一或多個系統的全部 Port 分佈與資料品質（不畫邊線，專注診斷與來源追蹤）。
 - 流程：
-  1) 啟動 V1 指令 → 選擇一個或多個系統
   2) 選擇投影平面：XY / XZ / YZ
   3) 後端對每個系統執行 Ports 抽取（多層策略）→ 投影 → 顯示點集合
   4) 日誌區塊印出：系統統計（viaHasPorts / viaNested / viaFallback）與每個 PortDetail
 - Ports 抽取三層策略：
   1) HasPorts：成員元素直接擁有的 Ports
   2) Nested：`IfcRelNests`（嵌套）關係中的 Ports（模型未使用 HasPorts 時常見）
-  3) Fallback：全模型 `IfcDistributionPort` 掃描後再篩入系統上下文的近似集合
-- PortDetail 欄位（示意）：`Label, Name, HostLabel, HostIfcType, Source(HasPorts|Nested|Fallback), RawXYZ, Projected(x,y), HostName`
-- 顏色規則：
   - 黑色：宿主為 IfcPipeSegment（視為管段端點）
   - 紅色：非 PipeSegment 或來自 fallback 的 Port
 - Tooltip：顯示 Port 名稱、Label、Host IfcType、Host Label、是否 PipeSegment。
 - 已修復問題：早期版本全部顯示紅色（原因：Port meta 與渲染順序錯配）→ 以 index 對齊修正。
-- 已知限制：
   - 部分模型宿主需透過反向 RelNests 追溯（尚未實作）→ 可能造成本應為管段端點的 Port 被標為紅色。
   - 點過度重疊難以辨識（後續可加 jitter / 疊點計數）。
   - 尚無圖例 / 篩選；可後續加入顯示切換（只顯示管段端點）。
@@ -136,24 +131,18 @@
 - Edge（`SchematicEdge`）：`Id`, `StartNodeId`, `EndNodeId`, `StartNode`, `EndNode`, `Entity`, `Connection`, `IsInferred`
   - 註：`Connection` 指向 `IfcRelConnectsPorts`，利於追溯原 IFC 關聯；目前 SOP 僅由 Ports 建立連線，因此 `IsInferred` 預期為 `false`，保留欄位以利未來擴充。
 - Graph（`SchematicData`）：`Nodes`, `Edges`, `SystemName`, `SystemEntity`
-- PortDetail（V1 附加記錄）：`Label`, `Name`, `HostLabel`, `HostIfcType`, `Source`, `RawXYZ`, `Projected`, `HostName`, `IsPipeSegment`
 
 ### 模擬資料服務（Mock）
-- `MockSchematicService.GetMockDataAsync()` 提供 6 節點/5 邊的硬編碼資料，節點 `Position2D` 已分散；可用於前端先行開發。
 
 ### 使用方式
-1. 載入 IFC 後，點工具列的「生成原理圖」。
 2. 若偵測到多個系統，會跳出「系統選擇」對話框，選定一個系統後開啟原理圖視窗；視窗標題會顯示系統名稱。
 3. 觀察節點與邊線出現並自動展開；不同 IfcType 呈現不同顏色。若 `Edges.Count == 0`，上方會顯示提示 Banner（僅節點、無連線）。
 4. 在原理圖點選節點（或邊），主畫面的 3D 視圖會高亮相對應物件並縮放至選取。
-
 > 限制：力導向為快速近似；大型網路可調低迭代次數或調整 `SchematicViewModel.Scale`。未實作自動避線與群集，但可後續擴充。
 
 ## 建置與執行
 - 以 PowerShell 在專案根目錄執行：
 
-```powershell
-# 建置
 dotnet build .\app\IFC_Viewer_00\IFC_Viewer_00.csproj --nologo
 
 # 執行（可指定啟動 IFC）
@@ -165,18 +154,10 @@ $env:IFC_STARTUP_FILE='j:\AI_Project\IFC_Viewer_00\Project1.ifc'; dotnet run --p
   - 清空 Isolate 集合並加入目標；清空 Hidden 集合
   - 呼叫 `ReloadModel(ViewPreserveCameraPosition)`；最後 `ZoomSelected()`
 - 隱藏選取項（Hide）
-  - 將目標累加到 Hidden 集合
-  - 呼叫 `ReloadModel(ViewPreserveCameraPosition)`
-- 全部顯示（ShowAll）
   - 清空 Isolate/Hidden 集合
   - 呼叫 `ReloadModel()`；最後 `ShowAll()` + `ViewHome()`
-
-> 註：不同版本集合名稱可能為 `IsolateInstances`/`IsolatedInstances` 與 `HiddenInstances`/`HiddenEntities`，本專案已做反射容錯。
-
-## TreeView 操作指南（多選與可見性）
 - 多選：
   - 單擊：僅選該節點（清空舊選取）
-  - Ctrl+點擊：切換該節點的選取狀態
   - Shift+點擊：以前序扁平順序做範圍選取（從上一次選到這次點擊）
 - 可見性：
   - 勾選「可見性」會遞迴影響子節點，並更新 3D 的 Hidden 清單

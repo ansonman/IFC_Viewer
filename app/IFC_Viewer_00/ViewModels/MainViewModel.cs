@@ -15,6 +15,7 @@ using System.Diagnostics;
 using System.Windows;
 using System.Windows.Media.Media3D;
 using IFC_Viewer_00.Views;
+using IfcSchemaViewer.Views;
 
 namespace IFC_Viewer_00.ViewModels
 {
@@ -40,6 +41,9 @@ namespace IFC_Viewer_00.ViewModels
 
         [ObservableProperty]
         private string? statusMessage;
+
+    // IFC Schema Viewer 視窗（可重用）
+    private IfcSchemaViewerWindow? _schemaWindow;
 
     // 3D 模型透明度（0~1），變更時即時套用到 3D 控制項
     [ObservableProperty]
@@ -73,6 +77,8 @@ namespace IFC_Viewer_00.ViewModels
     public RelayCommand ShowTestOverlay3DCommand { get; }
     public RelayCommand ShowAxesOverlay3DCommand { get; }
     public RelayCommand ClearOverlay3DCommand { get; }
+    public RelayCommand ShowSchemaViewerCommand { get; }
+    public RelayCommand ShowFlowTerminalAnchorsCommand { get; }
 
         public MainViewModel() : this(new StubViewer3DService(), new SelectionService()) { }
 
@@ -89,6 +95,8 @@ namespace IFC_Viewer_00.ViewModels
             ShowTestOverlay3DCommand = new RelayCommand(OnShowTestOverlay3D);
             ShowAxesOverlay3DCommand = new RelayCommand(() => OnShowAxesOverlay3D());
             ClearOverlay3DCommand = new RelayCommand(OnClearOverlay3D);
+            ShowSchemaViewerCommand = new RelayCommand(OnShowSchemaViewer);
+            ShowFlowTerminalAnchorsCommand = new RelayCommand(async () => await OnShowFlowTerminalAnchorsAsync());
 
             IsolateSelectionCommand = new RelayCommand(OnIsolateSelection);
             HideSelectionCommand = new RelayCommand(OnHideSelection);
@@ -102,6 +110,68 @@ namespace IFC_Viewer_00.ViewModels
             _selection.SelectionChanged += OnGlobalSelectionChanged;
             // 初始化預設透明度
             _viewer3D.SetModelOpacity(ModelOpacity);
+        }
+
+        // 顯示 FlowTerminal 紅點（2D Canvas，使用現有投影管線）
+        private async Task OnShowFlowTerminalAnchorsAsync()
+        {
+            try
+            {
+                if (Model == null)
+                {
+                    StatusMessage = "尚未載入模型";
+                    MessageBox.Show("尚未載入模型", "FlowTerminal 紅點", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                // 選擇投影平面（若對話框存在）
+                string plane = "XY";
+                try
+                {
+                    var dlg = new PlaneSelectionDialog { Owner = Application.Current?.Windows.OfType<Window>().FirstOrDefault(w => w.IsActive) };
+                    if (dlg.ShowDialog() == true) plane = dlg.SelectedPlane;
+                }
+                catch { }
+
+                var service = new SchematicService();
+                var pts3D = await service.GetFlowTerminalAnchorsAsync(Model);
+                var details = service.LastFlowTerminalAnchorDetails?.ToList() ?? new List<SchematicService.FlowTerminalAnchorDetail>();
+                if (pts3D == null || pts3D.Count == 0)
+                {
+                    MessageBox.Show("模型中沒有 IfcFlowTerminal 或無可用定位資料。", "FlowTerminal 紅點", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                var metaList = new System.Collections.Generic.List<(int? portLabel, string? name, string? hostType, int? hostLabel, bool isFromPipeSegment)>();
+                for (int i = 0; i < pts3D.Count; i++)
+                {
+                    SchematicService.FlowTerminalAnchorDetail? d = (i < details.Count) ? details[i] : null;
+                    int? label = d?.TerminalLabel;
+                    string? name = d?.TerminalName ?? d?.PortName;
+                    string hostType = "IfcFlowTerminal";
+                    int? hostLabel = d?.TerminalLabel;
+                    bool isPipe = false; // FlowTerminal 非管段
+                    metaList.Add((label, name, hostType, hostLabel, isPipe));
+                }
+
+                var svm = new IFC_Viewer_00.ViewModels.SchematicViewModel(service, _selection)
+                {
+                    CanvasWidth = 1200,
+                    CanvasHeight = 800,
+                    CanvasPadding = 40
+                };
+                svm.AddLog($"FlowTerminal 數量: {pts3D.Count}");
+                svm.AddLog($"投影平面: {plane}");
+
+                await svm.LoadPointsFrom3DAsync(pts3D, plane, metaList, flipX: false, flipY: true, tryBestIfDegenerate: true);
+                var view = new SchematicView { DataContext = svm };
+                view.Title = $"FlowTerminal 紅點 - {pts3D.Count} 個 ({plane})";
+                view.Show();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"FlowTerminal 紅點顯示失敗: {ex.Message}", "FlowTerminal 紅點", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
         // Sprint 1: 3D 物件高亮 - 供未來擴充
     partial void OnHighlightedEntityChanged(IIfcObject? value)
@@ -117,6 +187,16 @@ namespace IFC_Viewer_00.ViewModels
             {
                 _viewer3D.HighlightEntities(new[] { pe });
             }
+
+            // 若 Schema 視窗已開啟，跟隨目前高亮/選取自動更新內容（不自動開新視窗）
+            try
+            {
+                if (_schemaWindow != null)
+                {
+                    _schemaWindow.ShowEntity(value);
+                }
+            }
+            catch { }
         }
 
         // Sprint 1: 物件隔離/隱藏命令 stub
@@ -252,6 +332,58 @@ namespace IFC_Viewer_00.ViewModels
             StatusMessage = "模型載入成功！";
             // 套用當前透明度
             _viewer3D.SetModelOpacity(ModelOpacity);
+        }
+
+        // 公開方法：顯示某個 IIfcObject 的 IFC Schema 視窗
+        public void ShowSchema(IIfcObject entity)
+        {
+            // 若視窗曾被關閉，舊實例不可再 Show；Closed 後將欄位設為 null。
+            if (_schemaWindow == null)
+            {
+                _schemaWindow = new IfcSchemaViewerWindow
+                {
+                    Owner = System.Windows.Application.Current?.Windows
+                        .OfType<System.Windows.Window>()
+                        .FirstOrDefault(w => w.IsActive)
+                };
+                _schemaWindow.Closed += (_, __) => _schemaWindow = null;
+            }
+
+            // 顯示並帶到前景
+            _schemaWindow.ShowEntity(entity);
+        }
+
+        // 以命令方式手動開啟 IFC Schema Viewer（優先使用目前選取/高亮的物件）
+        private void OnShowSchemaViewer()
+        {
+            try
+            {
+                IIfcObject? target = HighlightedEntity ?? (SelectedNode?.Entity as IIfcObject);
+                if (target != null)
+                {
+                    ShowSchema(target);
+                    StatusMessage = $"已顯示 IFC Schema: {target.GetType().Name}";
+                    return;
+                }
+
+                // 無選取：改為開啟空白視窗，不再自動挑第一個 IIfcWall/IIfcProduct
+                if (_schemaWindow == null)
+                {
+                    _schemaWindow = new IfcSchemaViewerWindow
+                    {
+                        Owner = Application.Current?.Windows.OfType<Window>().FirstOrDefault(w => w.IsActive)
+                    };
+                    _schemaWindow.Closed += (_, __) => _schemaWindow = null;
+                }
+                _schemaWindow.Show();
+                _schemaWindow.Activate();
+                _schemaWindow.Topmost = true; _schemaWindow.Topmost = false;
+                StatusMessage = "IFC Schema Viewer 已開啟（無選取項目）";
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"開啟 IFC Schema Viewer 失敗: {ex.Message}", "IFC Schema Viewer", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         // Sprint 2/3：系統優先的原理圖生成與顯示

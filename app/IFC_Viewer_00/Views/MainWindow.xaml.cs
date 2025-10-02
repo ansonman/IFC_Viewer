@@ -8,6 +8,7 @@ using System.ComponentModel;
 using System.Windows.Media;
 using IFC_Viewer_00.ViewModels;
 using System.Windows.Input;
+using IfcSchemaViewer.Views; // 供可能的類型參考（若未使用，不影響）
 using System.Collections.ObjectModel;
 
 namespace IFC_Viewer_00.Views
@@ -159,6 +160,23 @@ namespace IFC_Viewer_00.Views
 
                         if (entity != null)
                         {
+                            // Alt + 左鍵：快速開啟 Schema Viewer
+                            bool altKey = (Keyboard.Modifiers & ModifierKeys.Alt) == ModifierKeys.Alt;
+                            if (altKey && DataContext != null)
+                            {
+                                try
+                                {
+                                    ((dynamic)DataContext).HighlightedEntity = entity;
+                                    var cmd = ((dynamic)DataContext).ShowSchemaViewerCommand as System.Windows.Input.ICommand;
+                                    if (cmd != null && cmd.CanExecute(null))
+                                    {
+                                        cmd.Execute(null);
+                                        e.Handled = true;
+                                        return;
+                                    }
+                                }
+                                catch { }
+                            }
                             if (ctrl)
                             {
                                 // Ctrl 切換多選（保留既有行為，不清空）
@@ -199,7 +217,28 @@ namespace IFC_Viewer_00.Views
                     // 顯式訂閱雙擊，只處理縮放（僅限 Control 類型提供 MouseDoubleClick）
                     if (host?.Content is System.Windows.Controls.Control ctrlDbl)
                     {
-                        ctrlDbl.MouseDoubleClick += Viewer3D_MouseDoubleClick;
+                        ctrlDbl.MouseDoubleClick += (s, e2) =>
+                        {
+                            try
+                            {
+                                bool ctrlKey = (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control;
+                                if (ctrlKey && DataContext != null)
+                                {
+                                    var pos2 = e2.GetPosition(uiElem);
+                                    TryPickUnderMouseAndSetSelection(uiElem, pos2);
+                                    var cmd2 = ((dynamic)DataContext).ShowSchemaViewerCommand as System.Windows.Input.ICommand;
+                                    if (cmd2 != null && cmd2.CanExecute(null))
+                                    {
+                                        cmd2.Execute(null);
+                                        e2.Handled = true;
+                                        return;
+                                    }
+                                }
+                            }
+                            catch { }
+                            // 預設：雙擊縮放
+                            Viewer3D_MouseDoubleClick(s, e2);
+                        };
                     }
                     uiElem.PreviewMouseRightButtonDown += (s, e) =>
                     {

@@ -26,6 +26,19 @@ namespace IFC_Viewer_00.Services
             return root;
         }
 
+        public SchemaNode GenerateSchemaTree(IXbimEntity entity, string rootName, int maxDepth)
+        {
+            if (entity == null) throw new ArgumentNullException(nameof(entity));
+            var root = new SchemaNode
+            {
+                PropertyName = rootName,
+                PropertyType = entity.GetType().Name,
+                PropertyValue = DescribeEntity(entity)
+            };
+            BuildTreeRecursive(entity, root, maxDepth: Math.Max(1, maxDepth), currentDepth: 0);
+            return root;
+        }
+
         private void BuildTreeRecursive(IXbimEntity entity, SchemaNode parentNode, int maxDepth = 5, int currentDepth = 0)
         {
             if (entity == null) return;

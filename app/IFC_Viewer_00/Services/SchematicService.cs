@@ -80,6 +80,19 @@ namespace IFC_Viewer_00.Services
             string SourcePath // HasPorts / Nested / Fallback
         );
 
+        public record FlowTerminalAnchorDetail(
+            int TerminalLabel,
+            string? TerminalName,
+            double X,
+            double Y,
+            double Z,
+            int? PortLabel,
+            string? PortName,
+            string Source // Port | Placement | BBox
+        );
+
+        public IReadOnlyList<FlowTerminalAnchorDetail>? LastFlowTerminalAnchorDetails { get; private set; }
+
         /// <summary>
         /// 取得指定系統中所有 IfcDistributionPort 的 3D 絕對座標（若無系統成員 Ports，回傳空集合）。
         /// 僅做資料擷取，不進行任何投影或拓撲建構。
@@ -244,6 +257,76 @@ namespace IFC_Viewer_00.Services
             });
         }
 
+        /// <summary>
+        /// 取得模型中所有 IfcFlowTerminal 的 3D 定位點（優先 Port → LocalPlacement → BBox 中心）。
+        /// 僅回傳座標，詳細對應可從 LastFlowTerminalAnchorDetails 取得。
+        /// </summary>
+        public Task<List<Point3D>> GetFlowTerminalAnchorsAsync(IStepModel ifcModel)
+        {
+            if (ifcModel == null) throw new ArgumentNullException(nameof(ifcModel));
+            return Task.Run(() =>
+            {
+                var pts = new List<Point3D>();
+                var details = new List<FlowTerminalAnchorDetail>();
+                try
+                {
+                    var terms = ifcModel.Instances.OfType<IIfcFlowTerminal>()?.ToList() ?? new List<IIfcFlowTerminal>();
+                    foreach (var t in terms)
+                    {
+                        Point3D? anchor = null;
+                        int? portLbl = null; string? portName = null; string source = "";
+
+                        // 1) Port 優先：選擇 SOURCE 或 SINK 的主要 Port，取其點
+                        try
+                        {
+                            var ports = GetPorts(t).OfType<IIfcDistributionPort>().ToList();
+                            IIfcDistributionPort? pick = ports.FirstOrDefault(p => p.FlowDirection == IfcFlowDirectionEnum.SOURCE)
+                                                        ?? ports.FirstOrDefault(p => p.FlowDirection == IfcFlowDirectionEnum.SINK)
+                                                        ?? ports.FirstOrDefault();
+                            if (pick != null)
+                            {
+                                var pp = GetPortPoint3D(pick);
+                                if (pp.HasValue)
+                                {
+                                    anchor = pp.Value;
+                                    portLbl = (pick as IPersistEntity)?.EntityLabel;
+                                    try { portName = IfcStringHelper.FromValue((pick as IIfcRoot)?.Name); } catch { }
+                                    source = "Port";
+                                }
+                            }
+                        }
+                        catch { }
+
+                        // 2) 後援：LocalPlacement
+                        if (!anchor.HasValue)
+                        {
+                            try
+                            {
+                                anchor = GetElementPoint(t as IIfcProduct);
+                                source = "Placement";
+                            }
+                            catch { }
+                        }
+
+                        // 3)（預留）BBox 中心：目前不在此處建立幾何內容，避免昂貴依賴；若之後加入現有幾何管線可補強。
+
+                        var a = anchor ?? new Point3D(0, 0, 0);
+                        pts.Add(a);
+                        details.Add(new FlowTerminalAnchorDetail(
+                            TerminalLabel: (t as IPersistEntity)?.EntityLabel ?? 0,
+                            TerminalName: SafeName(t as IIfcRoot),
+                            X: a.X, Y: a.Y, Z: a.Z,
+                            PortLabel: portLbl, PortName: portName,
+                            Source: string.IsNullOrEmpty(source) ? "Unknown" : source
+                        ));
+                    }
+                }
+                catch { }
+                LastFlowTerminalAnchorDetails = details;
+                return pts;
+            });
+        }
+
         private static string SafeName(IIfcRoot? r)
         {
             try { return IfcStringHelper.FromValue(r?.Name) ?? IfcStringHelper.FromValue(r?.GlobalId) ?? string.Empty; } catch { return string.Empty; }
@@ -309,6 +392,17 @@ namespace IFC_Viewer_00.Services
             return await Task.Run(() =>
             {
                 var results = new List<SchematicData>();
+
+                // 模型掃描與報告：統計模型中三類元件的總數量
+                try
+                {
+                    int totalFittings = 0, totalTerminals = 0, totalSegments = 0;
+                    try { totalFittings = ifcModel.Instances.OfType<IIfcPipeFitting>()?.Count() ?? 0; } catch { }
+                    try { totalTerminals = ifcModel.Instances.OfType<IIfcFlowTerminal>()?.Count() ?? 0; } catch { }
+                    try { totalSegments = ifcModel.Instances.OfType<IIfcPipeSegment>()?.Count() ?? 0; } catch { }
+                    System.Diagnostics.Trace.WriteLine($"[Service][GenSys] Model scan: IfcPipeFitting={totalFittings}, IfcFlowTerminal={totalTerminals}, IfcPipeSegment={totalSegments}");
+                }
+                catch { }
 
                 // 1) 尋找系統實例（IfcSystem 與 IfcDistributionSystem）
                 var sysList = new List<IIfcSystem>();
@@ -470,7 +564,23 @@ namespace IFC_Viewer_00.Services
                     }
                     catch { }
 
-                    // e) 收集完成後加入結果
+                    // e) 結果統計與報告（每個系統）：統計 Nodes 中三類 IfcType 的數量
+                    try
+                    {
+                        int nFittings = 0, nTerminals = 0, nSegments = 0;
+                        try { nFittings = data.Nodes.Count(n => string.Equals(n.IfcType, "IfcPipeFitting", StringComparison.OrdinalIgnoreCase)); } catch { }
+                        try { nTerminals = data.Nodes.Count(n => string.Equals(n.IfcType, "IfcFlowTerminal", StringComparison.OrdinalIgnoreCase)); } catch { }
+                        try { nSegments = data.Nodes.Count(n => string.Equals(n.IfcType, "IfcPipeSegment", StringComparison.OrdinalIgnoreCase)); } catch { }
+                        var sysNameForLog = data.SystemName;
+                        if (string.IsNullOrWhiteSpace(sysNameForLog))
+                        {
+                            try { sysNameForLog = IfcStringHelper.FromValue((sys as IIfcRoot)?.Name) ?? IfcStringHelper.FromValue((sys as IIfcRoot)?.GlobalId) ?? sys.GetType().Name; } catch { sysNameForLog = sys.GetType().Name; }
+                        }
+                        System.Diagnostics.Trace.WriteLine($"[Service][GenSys] Result stats for system '{sysNameForLog}': IfcPipeFitting={nFittings}, IfcFlowTerminal={nTerminals}, IfcPipeSegment={nSegments}, TotalNodes={data.Nodes.Count}, Edges={data.Edges.Count}");
+                    }
+                    catch { }
+
+                    // f) 收集完成後加入結果
                     try { PopulateLevels(ifcModel, data); } catch { }
                     results.Add(data);
                 }
@@ -1151,12 +1261,13 @@ namespace IFC_Viewer_00.Services
             if (port == null) return null;
             try
             {
-                // 1) 直接嘗試 Port 自身的 ObjectPlacement（若 schema 支援）
-                var lp = (port as IIfcProduct)?.ObjectPlacement as IIfcLocalPlacement;
-                var rp = lp?.RelativePlacement as IIfcAxis2Placement3D;
-                var p = rp?.Location?.Coordinates;
-                if (p != null && p.Count >= 3)
-                    return new Point3D(p[0], p[1], p[2]);
+                // 1) 直接嘗試 Port 自身的 ObjectPlacement（若 schema 支援）→ 使用完整 Placement 鏈求世界座標
+                var prodPort = port as IIfcProduct;
+                if (prodPort?.ObjectPlacement is IIfcObjectPlacement portPlacement)
+                {
+                    var basis = GetBasisFromPlacement(portPlacement);
+                    return basis.O;
+                }
 
                 // 2) 後援：由 ContainedIn 找宿主元素位置
                 var prod = TryGetRelatedProductFromContainedIn(port);
@@ -1248,15 +1359,13 @@ namespace IFC_Viewer_00.Services
 
         private static Point3D GetElementPoint(IIfcProduct prod)
         {
-            // 嘗試從 ObjectPlacement → IfcLocalPlacement → IfcAxis2Placement3D 取得座標
+            // 使用完整 Placement 鏈（包含 PlacementRelTo）計算世界座標原點
             try
             {
-                var lp = prod.ObjectPlacement as IIfcLocalPlacement;
-                var rp = lp?.RelativePlacement as IIfcAxis2Placement3D;
-                var p = rp?.Location?.Coordinates;
-                if (p != null && p.Count >= 3)
+                if (prod?.ObjectPlacement is IIfcObjectPlacement placement)
                 {
-                    return new Point3D(p[0], p[1], p[2]);
+                    var basis = GetBasisFromPlacement(placement);
+                    return basis.O;
                 }
             }
             catch { /* ignore */ }
@@ -1278,6 +1387,17 @@ namespace IFC_Viewer_00.Services
                     foreach (var hp in de.HasPorts)
                     {
                         if (hp?.RelatingPort != null) ports.Add(hp.RelatingPort);
+                    }
+                }
+                // 2) 嵌套關聯：IfcRelNests（Revit 常見）
+                if (de.IsNestedBy != null)
+                {
+                    foreach (var nestRel in de.IsNestedBy)
+                    {
+                        foreach (var ro in nestRel.RelatedObjects?.OfType<IIfcDistributionPort>() ?? Enumerable.Empty<IIfcDistributionPort>())
+                        {
+                            ports.Add(ro);
+                        }
                     }
                 }
             }
