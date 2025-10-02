@@ -268,9 +268,13 @@ namespace IFC_Viewer_00.Services
             {
                 var pts = new List<Point3D>();
                 var details = new List<FlowTerminalAnchorDetail>();
+                int viaPort = 0, viaPlacement = 0, viaUnknown = 0, termsWithNoPorts = 0;
                 try
                 {
                     var terms = ifcModel.Instances.OfType<IIfcFlowTerminal>()?.ToList() ?? new List<IIfcFlowTerminal>();
+                    int totalPorts = 0;
+                    try { totalPorts = ifcModel.Instances.OfType<IIfcDistributionPort>()?.Count() ?? 0; } catch { }
+                    System.Diagnostics.Trace.WriteLine($"[Service][FTA] Model scan: FlowTerminal={terms.Count}, DistributionPort={totalPorts}");
                     foreach (var t in terms)
                     {
                         Point3D? anchor = null;
@@ -280,6 +284,7 @@ namespace IFC_Viewer_00.Services
                         try
                         {
                             var ports = GetPorts(t).OfType<IIfcDistributionPort>().ToList();
+                            if (ports.Count == 0) termsWithNoPorts++;
                             IIfcDistributionPort? pick = ports.FirstOrDefault(p => p.FlowDirection == IfcFlowDirectionEnum.SOURCE)
                                                         ?? ports.FirstOrDefault(p => p.FlowDirection == IfcFlowDirectionEnum.SINK)
                                                         ?? ports.FirstOrDefault();
@@ -292,6 +297,7 @@ namespace IFC_Viewer_00.Services
                                     portLbl = (pick as IPersistEntity)?.EntityLabel;
                                     try { portName = IfcStringHelper.FromValue((pick as IIfcRoot)?.Name); } catch { }
                                     source = "Port";
+                                    viaPort++;
                                 }
                             }
                         }
@@ -304,6 +310,7 @@ namespace IFC_Viewer_00.Services
                             {
                                 anchor = GetElementPoint(t as IIfcProduct);
                                 source = "Placement";
+                                viaPlacement++;
                             }
                             catch { }
                         }
@@ -319,10 +326,21 @@ namespace IFC_Viewer_00.Services
                             PortLabel: portLbl, PortName: portName,
                             Source: string.IsNullOrEmpty(source) ? "Unknown" : source
                         ));
+                        if (string.IsNullOrEmpty(source)) viaUnknown++;
                     }
                 }
                 catch { }
                 LastFlowTerminalAnchorDetails = details;
+                try
+                {
+                    System.Diagnostics.Trace.WriteLine($"[Service][FTA] Anchors built: total={pts.Count}, viaPort={viaPort}, viaPlacement={viaPlacement}, viaUnknown={viaUnknown}, terminalsWithNoPorts={termsWithNoPorts}");
+                    // 範例列印前幾筆（避免太多）
+                    foreach (var d in details.Take(5))
+                    {
+                        System.Diagnostics.Trace.WriteLine($"[Service][FTA]  • T(L{d.TerminalLabel}) '{d.TerminalName}' -> {d.Source} XYZ=({d.X:0.##},{d.Y:0.##},{d.Z:0.##}) PortLabel={(d.PortLabel?.ToString() ?? "-")}" );
+                    }
+                }
+                catch { }
                 return pts;
             });
         }
