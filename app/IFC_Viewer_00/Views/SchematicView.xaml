@@ -38,11 +38,12 @@
                 <StackPanel Orientation="Horizontal" Margin="12,0" VerticalAlignment="Center">
                     <Rectangle Width="14" Height="14" Fill="{Binding PipeNodeBrush}" Stroke="#333" StrokeThickness="0.5" RadiusX="2" RadiusY="2"/>
                     <TextBlock Text=" Pipe 節點" Margin="4,0,8,0" VerticalAlignment="Center"/>
-                    <Button Content="換色" Padding="6,2" Command="{Binding CyclePipeColorCommand}"/>
+                    <Button Content="換色" Padding="6,2" Command="{Binding CyclePipeNodeColorCommand}"/>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" Margin="12,0" VerticalAlignment="Center">
                     <Rectangle Width="24" Height="4" Fill="{Binding PipeEdgeBrush}" Stroke="#333" StrokeThickness="0.5"/>
-                    <TextBlock Text=" Pipe 線" Margin="4,0,0,0" VerticalAlignment="Center"/>
+                    <TextBlock Text=" Pipe 線" Margin="4,0,8,0" VerticalAlignment="Center"/>
+                    <Button Content="換色" Padding="6,2" Command="{Binding CyclePipeEdgeColorCommand}"/>
                 </StackPanel>
             </StackPanel>
         </StackPanel>

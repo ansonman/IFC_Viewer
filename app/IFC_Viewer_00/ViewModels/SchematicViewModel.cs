@@ -3,6 +3,8 @@ using System.Collections.ObjectModel;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
+using System.IO;
+using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -52,6 +54,8 @@ namespace IFC_Viewer_00.ViewModels
     // Phase 0: 顏色切換命令
     public ICommand CycleTerminalColorCommand { get; }
     public ICommand CyclePipeColorCommand { get; }
+    public ICommand CyclePipeNodeColorCommand { get; }
+    public ICommand CyclePipeEdgeColorCommand { get; }
 
     // 視覺預設
     private double _defaultNodeSize = 8.0; // px
@@ -75,7 +79,19 @@ namespace IFC_Viewer_00.ViewModels
         Brushes.DeepPink
     };
     private int _terminalBrushIndex = 0;
-    private int _pipeBrushIndex = 0;
+    private int _pipeBrushIndex = 0; // legacy combined pipe index（保留相容）
+    private int _pipeNodeBrushIndex = 0;
+    private int _pipeEdgeBrushIndex = 0;
+
+    // Settings persistence
+    private static readonly string ColorSettingsPath =
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "IFC_Viewer_00", "schematic_colors.json");
+    private class ColorSettings
+    {
+        public string? Terminal { get; set; }
+        public string? PipeNode { get; set; }
+        public string? PipeEdge { get; set; }
+    }
 
         public SchematicViewModel(SchematicService service, ISelectionService? selection = null)
         {
@@ -146,6 +162,7 @@ namespace IFC_Viewer_00.ViewModels
                 TerminalBrush = PresetBrushes[_terminalBrushIndex];
                 ApplyCurrentColorsToViews();
                 AddLog($"[View] Terminal 色切換 → {TerminalBrush}");
+                SaveColorsToDisk();
             });
             CyclePipeColorCommand = new SchematicCommand(_ =>
             {
@@ -155,7 +172,27 @@ namespace IFC_Viewer_00.ViewModels
                 PipeEdgeBrush = PresetBrushes[_pipeBrushIndex];
                 ApplyCurrentColorsToViews();
                 AddLog($"[View] Pipe 色切換 → {PipeEdgeBrush}");
+                SaveColorsToDisk();
             });
+            CyclePipeNodeColorCommand = new SchematicCommand(_ =>
+            {
+                _pipeNodeBrushIndex = (_pipeNodeBrushIndex + 1) % PresetBrushes.Length;
+                PipeNodeBrush = PresetBrushes[_pipeNodeBrushIndex];
+                ApplyCurrentColorsToViews();
+                AddLog($"[View] Pipe 節點色切換 → {PipeNodeBrush}");
+                SaveColorsToDisk();
+            });
+            CyclePipeEdgeColorCommand = new SchematicCommand(_ =>
+            {
+                _pipeEdgeBrushIndex = (_pipeEdgeBrushIndex + 1) % PresetBrushes.Length;
+                PipeEdgeBrush = PresetBrushes[_pipeEdgeBrushIndex];
+                ApplyCurrentColorsToViews();
+                AddLog($"[View] Pipe 線色切換 → {PipeEdgeBrush}");
+                SaveColorsToDisk();
+            });
+
+            // 啟動載入既有顏色設定
+            LoadColorsFromDisk();
         }
 
         public async Task LoadAsync(IModel model)
@@ -635,6 +672,67 @@ namespace IFC_Viewer_00.ViewModels
             {
                 ev.EdgeBrush = PipeEdgeBrush;
             }
+        }
+
+        // ===== 顏色持久化 =====
+        private static string BrushToHex(Brush b)
+        {
+            if (b is SolidColorBrush scb)
+            {
+                var c = scb.Color; return $"#{c.R:X2}{c.G:X2}{c.B:X2}";
+            }
+            return "#000000";
+        }
+
+        private static Brush HexToBrush(string? hex, Brush fallback)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(hex)) return fallback;
+                if (hex.StartsWith("#"))
+                {
+                    var col = (Color)ColorConverter.ConvertFromString(hex);
+                    return new SolidColorBrush(col);
+                }
+            }
+            catch { }
+            return fallback;
+        }
+
+        private void SaveColorsToDisk()
+        {
+            try
+            {
+                var dir = Path.GetDirectoryName(ColorSettingsPath)!;
+                if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                var obj = new ColorSettings
+                {
+                    Terminal = BrushToHex(TerminalBrush),
+                    PipeNode = BrushToHex(PipeNodeBrush),
+                    PipeEdge = BrushToHex(PipeEdgeBrush)
+                };
+                var json = JsonSerializer.Serialize(obj, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(ColorSettingsPath, json);
+            }
+            catch { }
+        }
+
+        private void LoadColorsFromDisk()
+        {
+            try
+            {
+                if (!File.Exists(ColorSettingsPath)) return;
+                var json = File.ReadAllText(ColorSettingsPath);
+                var obj = JsonSerializer.Deserialize<ColorSettings>(json);
+                if (obj == null) return;
+                var term = HexToBrush(obj.Terminal, TerminalBrush);
+                var pn = HexToBrush(obj.PipeNode, PipeNodeBrush);
+                var pe = HexToBrush(obj.PipeEdge, PipeEdgeBrush);
+                TerminalBrush = term; PipeNodeBrush = pn; PipeEdgeBrush = pe;
+                ApplyCurrentColorsToViews();
+                AddLog("[View] 已載入顏色設定");
+            }
+            catch { }
         }
 
         // INotifyPropertyChanged
