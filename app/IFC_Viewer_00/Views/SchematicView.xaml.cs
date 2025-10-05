@@ -3,6 +3,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using WF = System.Windows.Forms;
 using IFC_Viewer_00.Services;
 using IFC_Viewer_00.ViewModels;
 
@@ -15,6 +16,9 @@ namespace IFC_Viewer_00.Views
         private const double MinScale = 0.1;
         private const double MaxScale = 10.0;
         private const double ZoomFactor = 1.15; // 每格滾輪的縮放倍率
+        // Phase 2: 橡皮筋框選
+        private bool _isRubberBandSelecting = false;
+        private Point _rubberStart;
 
         public SchematicView()
         {
@@ -161,6 +165,23 @@ namespace IFC_Viewer_00.Views
                     this.Cursor = System.Windows.Input.Cursors.SizeAll;
                     this.CaptureMouse();
                 }
+                else if (e.ChangedButton == System.Windows.Input.MouseButton.Left)
+                {
+                    var canvas = this.FindName("Canvas") as System.Windows.Controls.Canvas;
+                    if (canvas == null) return;
+                    var p = e.GetPosition(canvas);
+                    _rubberStart = p;
+                    _isRubberBandSelecting = true;
+                    var rect = this.FindName("RubberBand") as System.Windows.Shapes.Rectangle;
+                    if (rect != null)
+                    {
+                        System.Windows.Controls.Canvas.SetLeft(rect, p.X);
+                        System.Windows.Controls.Canvas.SetTop(rect, p.Y);
+                        rect.Width = 0;
+                        rect.Height = 0;
+                        rect.Visibility = Visibility.Visible;
+                    }
+                }
             }
             catch { }
         }
@@ -186,6 +207,21 @@ namespace IFC_Viewer_00.Views
                     translate.X += dx;
                     translate.Y += dy;
                 }
+                else if (_isRubberBandSelecting && e.LeftButton == System.Windows.Input.MouseButtonState.Pressed)
+                {
+                    var canvas = this.FindName("Canvas") as System.Windows.Controls.Canvas;
+                    var rect = this.FindName("RubberBand") as System.Windows.Shapes.Rectangle;
+                    if (canvas == null || rect == null) return;
+                    var p = e.GetPosition(canvas);
+                    double x = Math.Min(p.X, _rubberStart.X);
+                    double y = Math.Min(p.Y, _rubberStart.Y);
+                    double w = Math.Abs(p.X - _rubberStart.X);
+                    double h = Math.Abs(p.Y - _rubberStart.Y);
+                    System.Windows.Controls.Canvas.SetLeft(rect, x);
+                    System.Windows.Controls.Canvas.SetTop(rect, y);
+                    rect.Width = w;
+                    rect.Height = h;
+                }
             }
             catch { }
         }
@@ -199,6 +235,32 @@ namespace IFC_Viewer_00.Views
                     _lastPanPoint = null;
                     this.Cursor = System.Windows.Input.Cursors.Arrow;
                     this.ReleaseMouseCapture();
+                }
+                else if (e.ChangedButton == System.Windows.Input.MouseButton.Left)
+                {
+                    var rect = this.FindName("RubberBand") as System.Windows.Shapes.Rectangle;
+                    var canvas = this.FindName("Canvas") as System.Windows.Controls.Canvas;
+                    if (rect != null && canvas != null)
+                    {
+                        var x = System.Windows.Controls.Canvas.GetLeft(rect);
+                        var y = System.Windows.Controls.Canvas.GetTop(rect);
+                        var w = rect.Width;
+                        var h = rect.Height;
+                        rect.Visibility = Visibility.Collapsed;
+                        _isRubberBandSelecting = false;
+
+                        if (w > 2 && h > 2 && this.DataContext is SchematicViewModel vm)
+                        {
+                            // 計算落在矩形中的節點，注意節點位置是以中心點 X/Y
+                            var selected = vm.Nodes.Where(n => n.X >= x && n.X <= x + w && n.Y >= y && n.Y <= y + h)
+                                                   .Select(n => (n.Node.Entity as Xbim.Common.IPersistEntity)?.EntityLabel ?? 0)
+                                                   .Where(id => id != 0)
+                                                   .ToList();
+                            bool additive = (System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Control) == System.Windows.Input.ModifierKeys.Control
+                                         || (System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Shift) == System.Windows.Input.ModifierKeys.Shift;
+                            vm.SelectByEntityLabels(selected, additive);
+                        }
+                    }
                 }
             }
             catch { }
@@ -294,6 +356,48 @@ namespace IFC_Viewer_00.Views
                 {
                     using var fs = new FileStream(sfd.FileName, FileMode.Create, FileAccess.Write);
                     encoder.Save(fs);
+                }
+            }
+            catch { }
+        }
+
+        private void PickTerminalColor_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                using var dlg = new WF.ColorDialog();
+                if (dlg.ShowDialog() == WF.DialogResult.OK && this.DataContext is SchematicViewModel vm)
+                {
+                    var c = System.Windows.Media.Color.FromArgb(255, dlg.Color.R, dlg.Color.G, dlg.Color.B);
+                    vm.SetColors(terminal: new System.Windows.Media.SolidColorBrush(c));
+                }
+            }
+            catch { }
+        }
+
+        private void PickPipeNodeColor_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                using var dlg = new WF.ColorDialog();
+                if (dlg.ShowDialog() == WF.DialogResult.OK && this.DataContext is SchematicViewModel vm)
+                {
+                    var c = System.Windows.Media.Color.FromArgb(255, dlg.Color.R, dlg.Color.G, dlg.Color.B);
+                    vm.SetColors(pipeNode: new System.Windows.Media.SolidColorBrush(c));
+                }
+            }
+            catch { }
+        }
+
+        private void PickPipeEdgeColor_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                using var dlg = new WF.ColorDialog();
+                if (dlg.ShowDialog() == WF.DialogResult.OK && this.DataContext is SchematicViewModel vm)
+                {
+                    var c = System.Windows.Media.Color.FromArgb(255, dlg.Color.R, dlg.Color.G, dlg.Color.B);
+                    vm.SetColors(pipeEdge: new System.Windows.Media.SolidColorBrush(c));
                 }
             }
             catch { }

@@ -63,6 +63,26 @@ namespace IFC_Viewer_00.ViewModels
     public bool SnapEnabled { get; private set; } = true;
     public bool LevelsVisible { get; private set; } = true;
 
+    // Phase 2: 圖層切換（預設全開）
+    private bool _showTerminals = true;
+    public bool ShowTerminals
+    {
+        get => _showTerminals;
+        set { if (_showTerminals != value) { _showTerminals = value; OnPropertyChanged(nameof(ShowTerminals)); } }
+    }
+    private bool _showPipes = true;
+    public bool ShowPipes
+    {
+        get => _showPipes;
+        set { if (_showPipes != value) { _showPipes = value; OnPropertyChanged(nameof(ShowPipes)); } }
+    }
+    private bool _showLabels = true;
+    public bool ShowLabels
+    {
+        get => _showLabels;
+        set { if (_showLabels != value) { _showLabels = value; OnPropertyChanged(nameof(ShowLabels)); } }
+    }
+
     // Phase 0: 顏色設定（含圖例綁定）
     private Brush _terminalBrush = Brushes.Red;
     public Brush TerminalBrush { get => _terminalBrush; set { if (_terminalBrush != value) { _terminalBrush = value; OnPropertyChanged(nameof(TerminalBrush)); } } }
@@ -193,6 +213,34 @@ namespace IFC_Viewer_00.ViewModels
 
             // 啟動載入既有顏色設定
             LoadColorsFromDisk();
+        }
+
+        // Phase 2: 由框選等行為觸發的批次選取（支援取代/累加）
+        public void SelectByEntityLabels(IEnumerable<int> labels, bool additive)
+        {
+            if (labels == null) return;
+            var ids = labels.Where(id => id != 0).Distinct().ToList();
+            if (ids.Count == 0) return;
+            if (_selection != null)
+            {
+                if (additive) _selection.AddRange(ids, SelectionOrigin.Schematic);
+                else _selection.SetSelection(ids, SelectionOrigin.Schematic);
+            }
+            // 本地同步選取樣式（即便沒有 selection service 也能看到效果）
+            var asSet = additive && _selection != null ? _selection.Selected.ToHashSet() : new HashSet<int>();
+            foreach (var nv in Nodes)
+            {
+                var lbl = (nv.Node.Entity as IPersistEntity)?.EntityLabel ?? 0;
+                bool inNew = ids.Contains(lbl);
+                nv.IsSelected = additive ? (inNew || asSet.Contains(lbl)) : inNew;
+            }
+            foreach (var ev in Edges)
+            {
+                var sid = (ev.Start.Node.Entity as IPersistEntity)?.EntityLabel ?? 0;
+                var tid = (ev.End.Node.Entity as IPersistEntity)?.EntityLabel ?? 0;
+                bool inNew = ids.Contains(sid) || ids.Contains(tid);
+                ev.IsSelected = inNew;
+            }
         }
 
         public async Task LoadAsync(IModel model)
@@ -674,6 +722,17 @@ namespace IFC_Viewer_00.ViewModels
             }
         }
 
+        // 供 View 呼叫：直接指定顏色（若傳入 null 則維持原值）
+        public void SetColors(Brush? terminal = null, Brush? pipeNode = null, Brush? pipeEdge = null)
+        {
+            if (terminal != null) TerminalBrush = terminal;
+            if (pipeNode != null) PipeNodeBrush = pipeNode;
+            if (pipeEdge != null) PipeEdgeBrush = pipeEdge;
+            ApplyCurrentColorsToViews();
+            SaveColorsToDisk();
+            AddLog("[View] 顏色已更新並保存");
+        }
+
         // ===== 顏色持久化 =====
         private static string BrushToHex(Brush b)
         {
@@ -797,6 +856,21 @@ namespace IFC_Viewer_00.ViewModels
         public Brush NodeBrush { get => _nodeBrush; set { if (_nodeBrush != value) { _nodeBrush = value; OnPropertyChanged(nameof(NodeBrush)); } } }
         private bool _isSelected;
         public bool IsSelected { get => _isSelected; set { if (_isSelected != value) { _isSelected = value; OnPropertyChanged(nameof(IsSelected)); } } }
+
+        // Phase 2: 類別標誌，供圖層切換判斷
+        public bool IsTerminal
+        {
+            get
+            {
+                try
+                {
+                    var t = Node?.IfcType;
+                    return !string.IsNullOrEmpty(t) && t.IndexOf("FlowTerminal", StringComparison.OrdinalIgnoreCase) >= 0;
+                }
+                catch { return false; }
+            }
+        }
+        public bool IsPipeNode => !IsTerminal; // 目前視終端以外者皆視為管線節點
 
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));

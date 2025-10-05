@@ -28,22 +28,33 @@
             <Button Content="Levels" Margin="8,0,0,0" Padding="8,2" Command="{Binding ToggleLevelsCommand}"/>
 
             <Separator Margin="8,0"/>
+            <!-- Phase 2: Layer Toggles -->
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <CheckBox Content="終端" Margin="4,0" IsChecked="{Binding ShowTerminals}"/>
+                <CheckBox Content="管線" Margin="4,0" IsChecked="{Binding ShowPipes}"/>
+                <CheckBox Content="標籤" Margin="4,0" IsChecked="{Binding ShowLabels}"/>
+            </StackPanel>
+
+            <Separator Margin="8,0"/>
             <!-- Legend + Color settings (Phase 0) -->
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                 <StackPanel Orientation="Horizontal" Margin="8,0" VerticalAlignment="Center">
                     <Rectangle Width="14" Height="14" Fill="{Binding TerminalBrush}" Stroke="#333" StrokeThickness="0.5" RadiusX="2" RadiusY="2"/>
                     <TextBlock Text=" FlowTerminal" Margin="4,0,8,0" VerticalAlignment="Center"/>
                     <Button Content="換色" Padding="6,2" Command="{Binding CycleTerminalColorCommand}"/>
+                    <Button Content="選色…" Padding="6,2" Margin="4,0,0,0" Click="PickTerminalColor_Click"/>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" Margin="12,0" VerticalAlignment="Center">
                     <Rectangle Width="14" Height="14" Fill="{Binding PipeNodeBrush}" Stroke="#333" StrokeThickness="0.5" RadiusX="2" RadiusY="2"/>
                     <TextBlock Text=" Pipe 節點" Margin="4,0,8,0" VerticalAlignment="Center"/>
                     <Button Content="換色" Padding="6,2" Command="{Binding CyclePipeNodeColorCommand}"/>
+                    <Button Content="選色…" Padding="6,2" Margin="4,0,0,0" Click="PickPipeNodeColor_Click"/>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" Margin="12,0" VerticalAlignment="Center">
                     <Rectangle Width="24" Height="4" Fill="{Binding PipeEdgeBrush}" Stroke="#333" StrokeThickness="0.5"/>
                     <TextBlock Text=" Pipe 線" Margin="4,0,8,0" VerticalAlignment="Center"/>
                     <Button Content="換色" Padding="6,2" Command="{Binding CyclePipeEdgeColorCommand}"/>
+                    <Button Content="選色…" Padding="6,2" Margin="4,0,0,0" Click="PickPipeEdgeColor_Click"/>
                 </StackPanel>
             </StackPanel>
         </StackPanel>
@@ -75,16 +86,16 @@
                             </Style.Triggers>
                         </Style>
                     </ItemsControl.ItemContainerStyle>
-                    <ItemsControl.ItemTemplate>
+                                        <ItemsControl.ItemTemplate>
                         <DataTemplate>
                             <Grid>
-                                <Line X1="{Binding X1}" X2="{Binding X2}" Y1="{Binding Y}" Y2="{Binding Y}"
+                                    <Line X1="{Binding X1}" X2="{Binding X2}" Y1="{Binding Y}" Y2="{Binding Y}"
                                       Stroke="#808080" StrokeDashArray="4,4" StrokeThickness="1" SnapsToDevicePixels="True"/>
-                                <TextBlock Text="{Binding Name}" FontSize="10" Foreground="#606060"
+                                    <TextBlock Text="{Binding Name}" FontSize="10" Foreground="#606060"
                                            Canvas.Left="{Binding LabelX}" Canvas.Top="{Binding LabelY}"/>
                             </Grid>
                         </DataTemplate>
-                    </ItemsControl.ItemTemplate>
+                                        </ItemsControl.ItemTemplate>
                 </ItemsControl>
                 <!-- 無 Ports 提示 Banner -->
                 <Border Background="#FFFDEDD0" BorderBrush="#FFE6B422" BorderThickness="1" CornerRadius="4" Padding="8" Visibility="Collapsed">
@@ -112,19 +123,38 @@
                         <Style TargetType="ContentPresenter">
                             <Setter Property="Canvas.Left" Value="0"/>
                             <Setter Property="Canvas.Top" Value="0"/>
+                            <!-- Phase 2: 邊的可見性受 ShowPipes 控制 -->
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding DataContext.ShowPipes, RelativeSource={RelativeSource AncestorType=Window}}" Value="False">
+                                    <Setter Property="UIElement.Visibility" Value="Collapsed"/>
+                                </DataTrigger>
+                            </Style.Triggers>
                         </Style>
                     </ItemsControl.ItemContainerStyle>
                     <ItemsControl.ItemTemplate>
                         <DataTemplate>
-            <Line X1="{Binding Start.X}"
-                        Y1="{Binding Start.Y}"
-                        X2="{Binding End.X}"
-                        Y2="{Binding End.Y}"
+                            <Line X1="{Binding Start.X}"
+                                  Y1="{Binding Start.Y}"
+                                  X2="{Binding End.X}"
+                                  Y2="{Binding End.Y}"
                                   Stroke="{Binding EdgeBrush}"
-                    StrokeThickness="{Binding Thickness}"
+                                  StrokeThickness="{Binding Thickness}"
                                   SnapsToDevicePixels="True"
                                   StrokeStartLineCap="Flat"
                                   StrokeEndLineCap="Flat">
+                                <!-- Phase 2: 選取強調 -->
+                                <Line.Style>
+                                    <Style TargetType="Line">
+                                        <Setter Property="Stroke" Value="{Binding EdgeBrush}"/>
+                                        <Setter Property="StrokeThickness" Value="{Binding Thickness}"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                                <Setter Property="Stroke" Value="OrangeRed"/>
+                                                <Setter Property="StrokeThickness" Value="3"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Line.Style>
                                 <Line.InputBindings>
                                     <MouseBinding MouseAction="LeftClick" Command="{Binding DataContext.EdgeClickCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}"/>
                                 </Line.InputBindings>
@@ -144,6 +174,23 @@
                         <Style TargetType="ContentPresenter">
                             <Setter Property="Canvas.Left" Value="{Binding TopLeftX}"/>
                             <Setter Property="Canvas.Top" Value="{Binding TopLeftY}"/>
+                            <!-- Phase 2: 節點的可見性（ShowTerminals/ShowPipes） -->
+                            <Style.Triggers>
+                                <MultiDataTrigger>
+                                    <MultiDataTrigger.Conditions>
+                                        <Condition Binding="{Binding DataContext.ShowTerminals, RelativeSource={RelativeSource AncestorType=Window}}" Value="False"/>
+                                        <Condition Binding="{Binding IsTerminal}" Value="True"/>
+                                    </MultiDataTrigger.Conditions>
+                                    <Setter Property="UIElement.Visibility" Value="Collapsed"/>
+                                </MultiDataTrigger>
+                                <MultiDataTrigger>
+                                    <MultiDataTrigger.Conditions>
+                                        <Condition Binding="{Binding DataContext.ShowPipes, RelativeSource={RelativeSource AncestorType=Window}}" Value="False"/>
+                                        <Condition Binding="{Binding IsPipeNode}" Value="True"/>
+                                    </MultiDataTrigger.Conditions>
+                                    <Setter Property="UIElement.Visibility" Value="Collapsed"/>
+                                </MultiDataTrigger>
+                            </Style.Triggers>
                         </Style>
                     </ItemsControl.ItemContainerStyle>
                     <ItemsControl.ItemTemplate>
@@ -159,6 +206,21 @@
                                             <TextBlock Text="{Binding Node.IsFromPipeSegment, StringFormat=PipeSegment端點: {0}}" FontSize="10"/>
                                         </StackPanel>
                                     </Ellipse.ToolTip>
+                                    <Ellipse.Style>
+                                        <Style TargetType="Ellipse">
+                                            <Setter Property="Stroke" Value="Black"/>
+                                            <Setter Property="StrokeThickness" Value="0.6"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding DataContext.ShowLabels, RelativeSource={RelativeSource AncestorType=Window}}" Value="False">
+                                                    <Setter Property="ToolTipService.IsEnabled" Value="False"/>
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                                    <Setter Property="Stroke" Value="OrangeRed"/>
+                                                    <Setter Property="StrokeThickness" Value="1.6"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Ellipse.Style>
                                 </Ellipse>
                                 <Grid.InputBindings>
                                     <MouseBinding MouseAction="LeftClick" Command="{Binding DataContext.NodeClickCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}"/>
@@ -167,6 +229,8 @@
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>
+                <!-- Phase 2: 橡皮筋框選矩形（位於最上層） -->
+                <Rectangle x:Name="RubberBand" Stroke="#007ACC" StrokeDashArray="4,2" StrokeThickness="1" Fill="#30007ACC" Visibility="Collapsed"/>
             </Canvas>
         </ScrollViewer>
 
