@@ -74,6 +74,7 @@ namespace IFC_Viewer_00.ViewModels
     public RelayCommand GenerateSchematicV1Command { get; }
     public RelayCommand GeneratePipeAxesCommand { get; }
     public RelayCommand GeneratePipeAxesWithTerminalsCommand { get; }
+    public RelayCommand GeneratePipeAxesWithTerminalsP2Command { get; }
     public RelayCommand ShowPipeOverlay3DCommand { get; }
     public RelayCommand ShowTestOverlay3DCommand { get; }
     public RelayCommand ShowAxesOverlay3DCommand { get; }
@@ -93,6 +94,8 @@ namespace IFC_Viewer_00.ViewModels
             GenerateSchematicV1Command = new RelayCommand(async () => await OnGenerateSchematicV1Async());
             GeneratePipeAxesCommand = new RelayCommand(async () => await OnGeneratePipeAxesAsync());
             GeneratePipeAxesWithTerminalsCommand = new RelayCommand(async () => await OnGeneratePipeAxesWithTerminalsAsync());
+            // Phase 2: 獨立入口，不影響既有 PSC
+            GeneratePipeAxesWithTerminalsP2Command = new RelayCommand(async () => await OnGeneratePipeAxesWithTerminalsP2Async());
             ShowPipeOverlay3DCommand = new RelayCommand(async () => await OnShowPipeOverlay3DAsync());
             ShowTestOverlay3DCommand = new RelayCommand(OnShowTestOverlay3D);
             ShowAxesOverlay3DCommand = new RelayCommand(() => OnShowAxesOverlay3D());
@@ -664,6 +667,51 @@ namespace IFC_Viewer_00.ViewModels
             catch (Exception ex)
             {
                 MessageBox.Show($"PipeAxis+Terminals 生成失敗: {ex.Message}", "PipeAxis+Terminals", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // Phase 2：管段軸線 + FlowTerminal（P2 開發入口，暫時沿用 P1 資料管線）
+        private async Task OnGeneratePipeAxesWithTerminalsP2Async()
+        {
+            try
+            {
+                if (Model == null)
+                {
+                    StatusMessage = "尚未載入模型";
+                    MessageBox.Show("尚未載入模型", "PSC P2", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                string plane = "XY";
+                try
+                {
+                    var dlg = new PlaneSelectionDialog { Owner = Application.Current?.Windows.OfType<Window>().FirstOrDefault(w => w.IsActive) };
+                    if (dlg.ShowDialog() == true) plane = dlg.SelectedPlane;
+                }
+                catch { }
+
+                var service = new SchematicService();
+                var data = await service.GeneratePipeAxesWithTerminalsAsync(Model, plane, flipY: true);
+                if (data.Nodes.Count == 0)
+                {
+                    MessageBox.Show("模型中沒有可解析的資料。", "PSC P2", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                var svm = new IFC_Viewer_00.ViewModels.SchematicViewModel(service, _selection)
+                {
+                    CanvasWidth = 1200,
+                    CanvasHeight = 800,
+                    CanvasPadding = 40
+                };
+                svm.AddLog("[PSC P2] 入口：目前沿用 P1 資料管線（之後將替換為 Phase 2 版面配置/互動）");
+                await svm.LoadPipeAxesAsync(data);
+                svm.AddLog($"生成管段軸線+終端紅點（P2）：Nodes={data.Nodes.Count} Plane={plane}");
+                var view = new SchematicView { DataContext = svm };
+                view.Title = $"PSC P2 - {data.Edges.Count} 段 ({plane})";
+                view.Show();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"PSC P2 生成失敗: {ex.Message}", "PSC P2", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 

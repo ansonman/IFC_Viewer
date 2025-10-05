@@ -67,6 +67,11 @@
                     <ToolTip Content="Pipe Schematic Core：以 Pipe 軸線 + FlowTerminal 紅點 為核心的 2D 平面視圖"/>
                 </Button.ToolTip>
             </Button>
+            <Button x:Name="BtnPSCP2" Content="PSC P2" Margin="8,0,0,0" Padding="10,4" Command="{Binding GeneratePipeAxesWithTerminalsP2Command}">
+                <Button.ToolTip>
+                    <ToolTip Content="Pipe Schematic Phase 2：獨立入口（不影響 PSC），後續將加入版面配置/互動強化"/>
+                </Button.ToolTip>
+            </Button>
             <Button x:Name="BtnShowOverlay3D" Content="3D 顯示中線/端點" Margin="8,0,0,0" Padding="10,4" Command="{Binding ShowPipeOverlay3DCommand}" />
             <Button x:Name="BtnShowTestOverlay3D" Content="3D 測試黑點/黑線" Margin="8,0,0,0" Padding="10,4" Command="{Binding ShowTestOverlay3DCommand}" />
             <Button x:Name="BtnShowAxesOverlay3D" Content="3D 測試三軸箭頭" Margin="8,0,0,0" Padding="10,4" Command="{Binding ShowAxesOverlay3DCommand}" />
