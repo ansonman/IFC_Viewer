@@ -62,6 +62,11 @@
             <Button x:Name="BtnGeneratePipeAxes" Content="Pipe軸線" Margin="8,0,0,0" Padding="10,4" Command="{Binding GeneratePipeAxesCommand}" />
             <Button x:Name="BtnShowFlowTerminalAnchors" Content="FlowTerminal 紅點" Margin="8,0,0,0" Padding="10,4" Command="{Binding ShowFlowTerminalAnchorsCommand}" />
             <Button x:Name="BtnGeneratePipeAxesWithTerminals" Content="Pipe軸線 + 紅點" Margin="8,0,0,0" Padding="10,4" Command="{Binding GeneratePipeAxesWithTerminalsCommand}" />
+            <Button x:Name="BtnPSC" Content="PSC" Margin="8,0,0,0" Padding="10,4" Command="{Binding GeneratePipeAxesWithTerminalsCommand}">
+                <Button.ToolTip>
+                    <ToolTip Content="Pipe Schematic Core：以 Pipe 軸線 + FlowTerminal 紅點 為核心的 2D 平面視圖"/>
+                </Button.ToolTip>
+            </Button>
             <Button x:Name="BtnShowOverlay3D" Content="3D 顯示中線/端點" Margin="8,0,0,0" Padding="10,4" Command="{Binding ShowPipeOverlay3DCommand}" />
             <Button x:Name="BtnShowTestOverlay3D" Content="3D 測試黑點/黑線" Margin="8,0,0,0" Padding="10,4" Command="{Binding ShowTestOverlay3DCommand}" />
             <Button x:Name="BtnShowAxesOverlay3D" Content="3D 測試三軸箭頭" Margin="8,0,0,0" Padding="10,4" Command="{Binding ShowAxesOverlay3DCommand}" />
