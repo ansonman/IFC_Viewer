@@ -13,7 +13,7 @@ using IFC_Viewer_00.Services;
 
 namespace IFC_Viewer_00.ViewModels
 {
-    public partial class SchematicViewModel
+    public partial class SchematicViewModel : INotifyPropertyChanged
     {
         private readonly SchematicService _service;
 
@@ -49,12 +49,33 @@ namespace IFC_Viewer_00.ViewModels
     public ICommand DecreaseLineWidthCommand { get; }
     public ICommand ToggleSnapCommand { get; }
     public ICommand ToggleLevelsCommand { get; }
+    // Phase 0: 顏色切換命令
+    public ICommand CycleTerminalColorCommand { get; }
+    public ICommand CyclePipeColorCommand { get; }
 
     // 視覺預設
     private double _defaultNodeSize = 8.0; // px
     private double _defaultEdgeThickness = 2.0; // px
     public bool SnapEnabled { get; private set; } = true;
     public bool LevelsVisible { get; private set; } = true;
+
+    // Phase 0: 顏色設定（含圖例綁定）
+    private Brush _terminalBrush = Brushes.Red;
+    public Brush TerminalBrush { get => _terminalBrush; set { if (_terminalBrush != value) { _terminalBrush = value; OnPropertyChanged(nameof(TerminalBrush)); } } }
+    private Brush _pipeNodeBrush = Brushes.Black;
+    public Brush PipeNodeBrush { get => _pipeNodeBrush; set { if (_pipeNodeBrush != value) { _pipeNodeBrush = value; OnPropertyChanged(nameof(PipeNodeBrush)); } } }
+    private Brush _pipeEdgeBrush = Brushes.DarkSlateGray;
+    public Brush PipeEdgeBrush { get => _pipeEdgeBrush; set { if (_pipeEdgeBrush != value) { _pipeEdgeBrush = value; OnPropertyChanged(nameof(PipeEdgeBrush)); } } }
+
+    // Phase 0: 顏色預設清單與索引
+    private static readonly Brush[] PresetBrushes = new Brush[]
+    {
+        Brushes.Red, Brushes.OrangeRed, Brushes.Orange, Brushes.Gold,
+        Brushes.YellowGreen, Brushes.SeaGreen, Brushes.SteelBlue, Brushes.MediumPurple,
+        Brushes.DeepPink
+    };
+    private int _terminalBrushIndex = 0;
+    private int _pipeBrushIndex = 0;
 
         public SchematicViewModel(SchematicService service, ISelectionService? selection = null)
         {
@@ -117,6 +138,24 @@ namespace IFC_Viewer_00.ViewModels
                 foreach (var lv in LevelLines) lv.Visible = LevelsVisible;
                 AddLog($"[View] Levels {(LevelsVisible ? "On" : "Off")}");
             });
+
+            // 顏色切換（簡易用預設色循環）
+            CycleTerminalColorCommand = new SchematicCommand(_ =>
+            {
+                _terminalBrushIndex = (_terminalBrushIndex + 1) % PresetBrushes.Length;
+                TerminalBrush = PresetBrushes[_terminalBrushIndex];
+                ApplyCurrentColorsToViews();
+                AddLog($"[View] Terminal 色切換 → {TerminalBrush}");
+            });
+            CyclePipeColorCommand = new SchematicCommand(_ =>
+            {
+                _pipeBrushIndex = (_pipeBrushIndex + 1) % PresetBrushes.Length;
+                // 同步節點與邊：節點走 PipeNodeBrush、邊走 PipeEdgeBrush（可相同色或不同色；此處同色）
+                PipeNodeBrush = PresetBrushes[_pipeBrushIndex];
+                PipeEdgeBrush = PresetBrushes[_pipeBrushIndex];
+                ApplyCurrentColorsToViews();
+                AddLog($"[View] Pipe 色切換 → {PipeEdgeBrush}");
+            });
         }
 
         public async Task LoadAsync(IModel model)
@@ -148,8 +187,8 @@ namespace IFC_Viewer_00.ViewModels
                     X = n.Position2D.X,
                     Y = n.Position2D.Y,
                     NodeBrush = (n.IfcType?.IndexOf("FlowTerminal", StringComparison.OrdinalIgnoreCase) >= 0)
-                        ? Brushes.Red
-                        : Brushes.Black, // 管段端點以黑色表示，Terminal 用紅色
+                        ? TerminalBrush
+                        : PipeNodeBrush, // 管段端點以 Pipe 色表示，Terminal 用 Terminal 色
                     NodeSize = _defaultNodeSize
                 };
                 map[n] = nv;
@@ -164,7 +203,7 @@ namespace IFC_Viewer_00.ViewModels
                     Edge = e,
                     Start = s,
                     End = t,
-                    EdgeBrush = Brushes.DarkSlateGray,
+                    EdgeBrush = PipeEdgeBrush,
                     Thickness = _defaultEdgeThickness
                 };
                 Edges.Add(ev);
@@ -583,6 +622,24 @@ namespace IFC_Viewer_00.ViewModels
         {
             AddLog($"[View] NodeSize={_defaultNodeSize:0.#} px | LineWidth={_defaultEdgeThickness:0.#} px | Snap={(SnapEnabled ? "On" : "Off")}");
         }
+
+        // 重新套用當前配置的顏色到現有節點與邊（用於切色後即時更新）
+        private void ApplyCurrentColorsToViews()
+        {
+            foreach (var nv in Nodes)
+            {
+                var isTerminal = nv.Node?.IfcType?.IndexOf("FlowTerminal", StringComparison.OrdinalIgnoreCase) >= 0;
+                nv.NodeBrush = isTerminal ? TerminalBrush : PipeNodeBrush;
+            }
+            foreach (var ev in Edges)
+            {
+                ev.EdgeBrush = PipeEdgeBrush;
+            }
+        }
+
+        // INotifyPropertyChanged
+        public event PropertyChangedEventHandler? PropertyChanged;
+        protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 
     public class SchematicNodeView : INotifyPropertyChanged

@@ -1,5 +1,8 @@
 using System;
+using System.IO;
 using System.Windows;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using IFC_Viewer_00.Services;
 using IFC_Viewer_00.ViewModels;
 
@@ -251,6 +254,46 @@ namespace IFC_Viewer_00.Views
                 if (this.DataContext is SchematicViewModel vm)
                 {
                     vm.Relayout();
+                }
+            }
+            catch { }
+        }
+
+        private void SavePng_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var canvas = this.FindName("Canvas") as System.Windows.Controls.Canvas;
+                if (canvas == null) return;
+
+                // 暫時移除平移與縮放，導出原始畫布內容（或可保留當前視圖，這裡選保留當前視圖）
+                // 我們保留當前視圖效果：直接渲染當前 RenderTransform 後的外觀
+
+                // 尺寸：使用實際呈現大小
+                int width = (int)Math.Max(1, canvas.ActualWidth);
+                int height = (int)Math.Max(1, canvas.ActualHeight);
+                var rtb = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+
+                // 需要測量/安排以確保 Visual 可被正確渲染
+                var size = new Size(canvas.ActualWidth, canvas.ActualHeight);
+                canvas.Measure(size);
+                canvas.Arrange(new Rect(size));
+
+                rtb.Render(canvas);
+
+                var encoder = new PngBitmapEncoder();
+                encoder.Frames.Add(BitmapFrame.Create(rtb));
+
+                // 儲存檔案（使用標準儲存對話框）
+                var sfd = new Microsoft.Win32.SaveFileDialog
+                {
+                    Filter = "PNG Image (*.png)|*.png",
+                    FileName = $"Schematic_{DateTime.Now:yyyyMMdd_HHmmss}.png"
+                };
+                if (sfd.ShowDialog(this) == true)
+                {
+                    using var fs = new FileStream(sfd.FileName, FileMode.Create, FileAccess.Write);
+                    encoder.Save(fs);
                 }
             }
             catch { }

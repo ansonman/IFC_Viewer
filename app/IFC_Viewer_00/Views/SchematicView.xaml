@@ -18,6 +18,7 @@
             <TextBlock Text="{Binding Edges.Count}" FontWeight="Bold" Margin="4,0" VerticalAlignment="Center"/>
             <Button Content="重置視圖" Margin="16,0,0,0" Padding="8,2" Click="ResetView_Click"/>
             <Button Content="重新布局" Margin="8,0,0,0" Padding="8,2" Click="Relayout_Click"/>
+            <Button Content="存成 PNG" Margin="8,0,0,0" Padding="8,2" Click="SavePng_Click"/>
             <Separator Margin="8,0"/>
             <Button Content="點 +" Margin="0,0,4,0" Padding="8,2" Command="{Binding IncreaseNodeSizeCommand}"/>
             <Button Content="點 -" Margin="0,0,8,0" Padding="8,2" Command="{Binding DecreaseNodeSizeCommand}"/>
@@ -25,6 +26,25 @@
             <Button Content="線 -" Margin="0,0,8,0" Padding="8,2" Command="{Binding DecreaseLineWidthCommand}"/>
             <Button Content="Snap" Margin="0" Padding="8,2" Command="{Binding ToggleSnapCommand}"/>
             <Button Content="Levels" Margin="8,0,0,0" Padding="8,2" Command="{Binding ToggleLevelsCommand}"/>
+
+            <Separator Margin="8,0"/>
+            <!-- Legend + Color settings (Phase 0) -->
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <StackPanel Orientation="Horizontal" Margin="8,0" VerticalAlignment="Center">
+                    <Rectangle Width="14" Height="14" Fill="{Binding TerminalBrush}" Stroke="#333" StrokeThickness="0.5" RadiusX="2" RadiusY="2"/>
+                    <TextBlock Text=" FlowTerminal" Margin="4,0,8,0" VerticalAlignment="Center"/>
+                    <Button Content="換色" Padding="6,2" Command="{Binding CycleTerminalColorCommand}"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="12,0" VerticalAlignment="Center">
+                    <Rectangle Width="14" Height="14" Fill="{Binding PipeNodeBrush}" Stroke="#333" StrokeThickness="0.5" RadiusX="2" RadiusY="2"/>
+                    <TextBlock Text=" Pipe 節點" Margin="4,0,8,0" VerticalAlignment="Center"/>
+                    <Button Content="換色" Padding="6,2" Command="{Binding CyclePipeColorCommand}"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="12,0" VerticalAlignment="Center">
+                    <Rectangle Width="24" Height="4" Fill="{Binding PipeEdgeBrush}" Stroke="#333" StrokeThickness="0.5"/>
+                    <TextBlock Text=" Pipe 線" Margin="4,0,0,0" VerticalAlignment="Center"/>
+                </StackPanel>
+            </StackPanel>
         </StackPanel>
 
         <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
@@ -99,7 +119,7 @@
                         Y1="{Binding Start.Y}"
                         X2="{Binding End.X}"
                         Y2="{Binding End.Y}"
-                                  Stroke="Black"
+                                  Stroke="{Binding EdgeBrush}"
                     StrokeThickness="{Binding Thickness}"
                                   SnapsToDevicePixels="True"
                                   StrokeStartLineCap="Flat"
