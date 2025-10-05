@@ -73,6 +73,7 @@ namespace IFC_Viewer_00.ViewModels
     public RelayCommand GenerateASSchematicCommand { get; }
     public RelayCommand GenerateSchematicV1Command { get; }
     public RelayCommand GeneratePipeAxesCommand { get; }
+    public RelayCommand GeneratePipeAxesWithTerminalsCommand { get; }
     public RelayCommand ShowPipeOverlay3DCommand { get; }
     public RelayCommand ShowTestOverlay3DCommand { get; }
     public RelayCommand ShowAxesOverlay3DCommand { get; }
@@ -91,6 +92,7 @@ namespace IFC_Viewer_00.ViewModels
             GenerateASSchematicCommand = new RelayCommand(async () => await OnGenerateASSchematicAsync());
             GenerateSchematicV1Command = new RelayCommand(async () => await OnGenerateSchematicV1Async());
             GeneratePipeAxesCommand = new RelayCommand(async () => await OnGeneratePipeAxesAsync());
+            GeneratePipeAxesWithTerminalsCommand = new RelayCommand(async () => await OnGeneratePipeAxesWithTerminalsAsync());
             ShowPipeOverlay3DCommand = new RelayCommand(async () => await OnShowPipeOverlay3DAsync());
             ShowTestOverlay3DCommand = new RelayCommand(OnShowTestOverlay3D);
             ShowAxesOverlay3DCommand = new RelayCommand(() => OnShowAxesOverlay3D());
@@ -618,6 +620,50 @@ namespace IFC_Viewer_00.ViewModels
             catch (Exception ex)
             {
                 MessageBox.Show($"PipeAxes 生成失敗: {ex.Message}", "PipeAxis", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // 新增：管段軸線 + FlowTerminal 紅點（同一平面）
+        private async Task OnGeneratePipeAxesWithTerminalsAsync()
+        {
+            try
+            {
+                if (Model == null)
+                {
+                    StatusMessage = "尚未載入模型";
+                    MessageBox.Show("尚未載入模型", "PipeAxis+Terminals", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                string plane = "XY";
+                try
+                {
+                    var dlg = new PlaneSelectionDialog { Owner = Application.Current?.Windows.OfType<Window>().FirstOrDefault(w => w.IsActive) };
+                    if (dlg.ShowDialog() == true) plane = dlg.SelectedPlane;
+                }
+                catch { }
+
+                var service = new SchematicService();
+                var data = await service.GeneratePipeAxesWithTerminalsAsync(Model, plane, flipY: true);
+                if (data.Nodes.Count == 0)
+                {
+                    MessageBox.Show("模型中沒有可解析的資料。", "PipeAxis+Terminals", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                var svm = new IFC_Viewer_00.ViewModels.SchematicViewModel(service, _selection)
+                {
+                    CanvasWidth = 1200,
+                    CanvasHeight = 800,
+                    CanvasPadding = 40
+                };
+                await svm.LoadPipeAxesAsync(data);
+                svm.AddLog($"生成管段軸線+終端紅點：Nodes={data.Nodes.Count} Plane={plane}");
+                var view = new SchematicView { DataContext = svm };
+                view.Title = $"PipeAxes+Terminals - {data.Edges.Count} 段 ({plane})";
+                view.Show();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"PipeAxis+Terminals 生成失敗: {ex.Message}", "PipeAxis+Terminals", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 

@@ -147,7 +147,9 @@ namespace IFC_Viewer_00.ViewModels
                     Node = n,
                     X = n.Position2D.X,
                     Y = n.Position2D.Y,
-                    NodeBrush = Brushes.Black, // 管段端點以黑色表示
+                    NodeBrush = (n.IfcType?.IndexOf("FlowTerminal", StringComparison.OrdinalIgnoreCase) >= 0)
+                        ? Brushes.Red
+                        : Brushes.Black, // 管段端點以黑色表示，Terminal 用紅色
                     NodeSize = _defaultNodeSize
                 };
                 map[n] = nv;

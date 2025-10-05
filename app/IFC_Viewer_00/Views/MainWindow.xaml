@@ -14,6 +14,9 @@
         <!-- 快捷鍵：FlowTerminal 紅點 -->
         <KeyBinding Modifiers="Ctrl+Shift" Key="F"
                     Command="{Binding ShowFlowTerminalAnchorsCommand}" />
+        <!-- 快捷鍵：Pipe軸線 + 紅點 -->
+        <KeyBinding Modifiers="Ctrl+Shift" Key="P"
+                    Command="{Binding GeneratePipeAxesWithTerminalsCommand}" />
     </Window.InputBindings>
     
     <Grid>
@@ -36,6 +39,8 @@
                 <Separator />
                 <MenuItem Header="IFC Schema Viewer (_S)" Command="{Binding ShowSchemaViewerCommand}" />
                 <MenuItem Header="FlowTerminal 紅點 (_F)" Command="{Binding ShowFlowTerminalAnchorsCommand}" />
+                <Separator />
+                <MenuItem Header="Pipe軸線 + 紅點 (_P)" Command="{Binding GeneratePipeAxesWithTerminalsCommand}" />
             </MenuItem>
             <MenuItem Header="說明(_H)">
                 <MenuItem Header="關於(_A)" />
@@ -56,6 +61,7 @@
             -->
             <Button x:Name="BtnGeneratePipeAxes" Content="Pipe軸線" Margin="8,0,0,0" Padding="10,4" Command="{Binding GeneratePipeAxesCommand}" />
             <Button x:Name="BtnShowFlowTerminalAnchors" Content="FlowTerminal 紅點" Margin="8,0,0,0" Padding="10,4" Command="{Binding ShowFlowTerminalAnchorsCommand}" />
+            <Button x:Name="BtnGeneratePipeAxesWithTerminals" Content="Pipe軸線 + 紅點" Margin="8,0,0,0" Padding="10,4" Command="{Binding GeneratePipeAxesWithTerminalsCommand}" />
             <Button x:Name="BtnShowOverlay3D" Content="3D 顯示中線/端點" Margin="8,0,0,0" Padding="10,4" Command="{Binding ShowPipeOverlay3DCommand}" />
             <Button x:Name="BtnShowTestOverlay3D" Content="3D 測試黑點/黑線" Margin="8,0,0,0" Padding="10,4" Command="{Binding ShowTestOverlay3DCommand}" />
             <Button x:Name="BtnShowAxesOverlay3D" Content="3D 測試三軸箭頭" Margin="8,0,0,0" Padding="10,4" Command="{Binding ShowAxesOverlay3DCommand}" />

@@ -1564,6 +1564,60 @@ namespace IFC_Viewer_00.Services
             });
         }
 
+        // 綜合版：管段軸線 + FlowTerminal 紅點（同一投影平面）
+        public async Task<SchematicData> GeneratePipeAxesWithTerminalsAsync(IModel ifcModel, string plane, bool flipY = true)
+        {
+            if (ifcModel == null) throw new ArgumentNullException(nameof(ifcModel));
+            // 先建出管段軸線資料
+            var data = await GeneratePipeAxesAsync(ifcModel, plane, flipY);
+
+            // 收集 Terminal 3D 定位點
+            var termPts = await GetFlowTerminalAnchorsAsync(ifcModel);
+            var termDetails = LastFlowTerminalAnchorDetails?.ToList() ?? new List<FlowTerminalAnchorDetail>();
+
+            // 在相同平面下做 3D→2D 投影（與 GeneratePipeAxesAsync 使用一致的對應）
+            (double px, double py) proj(Point3D p)
+            {
+                switch ((plane ?? "XY").Trim().ToUpperInvariant())
+                {
+                    case "XZ": return (p.X, flipY ? -p.Z : p.Z);
+                    case "YZ": return (p.Y, flipY ? -p.Z : p.Z);
+                    default:    return (p.X, flipY ? -p.Y : p.Y);
+                }
+            }
+
+            for (int i = 0; i < termPts.Count; i++)
+            {
+                var p3 = termPts[i];
+                var uv = proj(p3);
+                var d = (i < termDetails.Count) ? termDetails[i] : null;
+                var n = new SchematicNode
+                {
+                    Id = d?.TerminalLabel != null ? $"term:{d.TerminalLabel}" : $"term:{i}",
+                    Name = d?.TerminalName ?? $"Terminal-{i}",
+                    IfcType = "IfcFlowTerminal",
+                    Position3D = p3,
+                    Position2D = new System.Windows.Point(uv.px, uv.py),
+                    HostIfcType = "IfcFlowTerminal",
+                    HostLabel = d?.TerminalLabel
+                };
+                // 嘗試掛回實體（若能取得）
+                try
+                {
+                    if (d?.TerminalLabel is int lbl && lbl != 0)
+                    {
+                        var pe = ifcModel.Instances[lbl] as IPersistEntity;
+                        if (pe != null) n.Entity = pe;
+                    }
+                }
+                catch { }
+                data.Nodes.Add(n);
+            }
+
+            data.SystemName = $"PipeAxes+Terminals({(plane ?? "XY").Trim().ToUpperInvariant()})";
+            return data;
+        }
+
         // ======== 幾何輔助：Placement/Basis 與方向處理 ========
         private struct Basis3D
         {
