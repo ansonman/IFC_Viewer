@@ -83,6 +83,14 @@ namespace IFC_Viewer_00.ViewModels
         set { if (_showLabels != value) { _showLabels = value; OnPropertyChanged(nameof(ShowLabels)); } }
     }
 
+    // 診斷用：是否顯示縮放錨點（預設關閉）
+    private bool _showZoomAnchor = false;
+    public bool ShowZoomAnchor
+    {
+        get => _showZoomAnchor;
+        set { if (_showZoomAnchor != value) { _showZoomAnchor = value; OnPropertyChanged(nameof(ShowZoomAnchor)); } }
+    }
+
     // Phase 0: 顏色設定（含圖例綁定）
     private Brush _terminalBrush = Brushes.Red;
     public Brush TerminalBrush { get => _terminalBrush; set { if (_terminalBrush != value) { _terminalBrush = value; OnPropertyChanged(nameof(TerminalBrush)); } } }
@@ -227,19 +235,35 @@ namespace IFC_Viewer_00.ViewModels
                 else _selection.SetSelection(ids, SelectionOrigin.Schematic);
             }
             // 本地同步選取樣式（即便沒有 selection service 也能看到效果）
-            var asSet = additive && _selection != null ? _selection.Selected.ToHashSet() : new HashSet<int>();
+            HashSet<int> finalSet = new HashSet<int>();
+            if (_selection != null)
+            {
+                // 若有 selection service，直接以其集合為準（已被上面更新過）
+                finalSet = _selection.Selected.ToHashSet();
+            }
+            else
+            {
+                // 無 selection service：用本次 ids 模擬，若 additive 則累積當前已選
+                if (additive)
+                {
+                    foreach (var nv in Nodes)
+                    {
+                        var lbl0 = (nv.Node.Entity as IPersistEntity)?.EntityLabel ?? 0;
+                        if (lbl0 != 0 && nv.IsSelected) finalSet.Add(lbl0);
+                    }
+                }
+                foreach (var id in ids) finalSet.Add(id);
+            }
             foreach (var nv in Nodes)
             {
                 var lbl = (nv.Node.Entity as IPersistEntity)?.EntityLabel ?? 0;
-                bool inNew = ids.Contains(lbl);
-                nv.IsSelected = additive ? (inNew || asSet.Contains(lbl)) : inNew;
+                nv.IsSelected = lbl != 0 && finalSet.Contains(lbl);
             }
             foreach (var ev in Edges)
             {
                 var sid = (ev.Start.Node.Entity as IPersistEntity)?.EntityLabel ?? 0;
                 var tid = (ev.End.Node.Entity as IPersistEntity)?.EntityLabel ?? 0;
-                bool inNew = ids.Contains(sid) || ids.Contains(tid);
-                ev.IsSelected = inNew;
+                ev.IsSelected = (sid != 0 && finalSet.Contains(sid)) || (tid != 0 && finalSet.Contains(tid));
             }
         }
 

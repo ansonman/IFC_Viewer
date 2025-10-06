@@ -2,6 +2,7 @@
 using System.Data;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Windows;
 
 namespace IFC_Viewer_00;
@@ -9,7 +10,7 @@ namespace IFC_Viewer_00;
 /// <summary>
 /// Interaction logic for App.xaml
 /// </summary>
-public partial class App : Application
+public partial class App : System.Windows.Application
 {
 	protected override void OnStartup(StartupEventArgs e)
 	{

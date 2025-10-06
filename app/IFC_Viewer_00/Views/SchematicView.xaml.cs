@@ -3,6 +3,8 @@ using System.IO;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Shapes;
+using System.Windows.Threading;
 using WF = System.Windows.Forms;
 using IFC_Viewer_00.Services;
 using IFC_Viewer_00.ViewModels;
@@ -17,6 +19,9 @@ namespace IFC_Viewer_00.Views
         private const double MaxScale = 10.0;
         private const double ZoomFactor = 1.15; // 每格滾輪的縮放倍率
     // 已取消：橡皮筋框選
+        // 測試用：顯示 Zoom 錨點
+        private Ellipse? _zoomMarker;
+        private DispatcherTimer? _zoomMarkerTimer;
 
         public SchematicView()
         {
@@ -32,6 +37,18 @@ namespace IFC_Viewer_00.Views
             this.MouseDown += OnMouseDown;
             this.MouseMove += OnMouseMove;
             this.MouseUp += OnMouseUp;
+
+            // 初始化 Zoom Marker 計時器
+            _zoomMarkerTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+            _zoomMarkerTimer.Tick += (s, e) =>
+            {
+                try
+                {
+                    _zoomMarkerTimer?.Stop();
+                    if (_zoomMarker != null) _zoomMarker.Visibility = Visibility.Collapsed;
+                }
+                catch { }
+            };
         }
 
         private void SchematicView_Loaded(object sender, RoutedEventArgs e)
@@ -114,11 +131,15 @@ namespace IFC_Viewer_00.Views
                                         var tid = (ev.End.Node.Entity as Xbim.Common.IPersistEntity)?.EntityLabel ?? 0;
                                         ev.IsSelected = (sid != 0 && set.Contains(sid)) || (tid != 0 && set.Contains(tid));
                                     }
-                                    // 同步 3D 高亮（以選取為準，清理舊高亮）
+                                    // 同步 3D 高亮（先清理，再套用新選取）
                                     if (svc != null)
                                     {
+                                        // 先清空
+                                        svc.HighlightEntities(Array.Empty<int>(), clearPrevious: true);
+                                        // 再高亮目前選取
                                         var labels = sel.Selected?.ToArray() ?? Array.Empty<int>();
-                                        svc.HighlightEntities(labels, clearPrevious: true);
+                                        if (labels.Length > 0)
+                                            svc.HighlightEntities(labels, clearPrevious: false);
                                     }
                                 }
                                 catch { }
@@ -163,7 +184,47 @@ namespace IFC_Viewer_00.Views
                 translate.X = mousePos.X - contentPt.X * _currentScale;
                 translate.Y = mousePos.Y - contentPt.Y * _currentScale;
 
+                // 顯示 Zoom 中心標記（半透明藍點）
+                ShowZoomMarker(contentPt);
+
                 e.Handled = true;
+            }
+            catch { }
+        }
+
+        private void ShowZoomMarker(Point contentPt)
+        {
+            try
+            {
+                // 若未開啟診斷顯示，隱藏並返回
+                if (this.DataContext is SchematicViewModel vm && !vm.ShowZoomAnchor)
+                {
+                    if (_zoomMarker != null) _zoomMarker.Visibility = Visibility.Collapsed;
+                    _zoomMarkerTimer?.Stop();
+                    return;
+                }
+                var canvas = this.FindName("Canvas") as System.Windows.Controls.Canvas;
+                if (canvas == null) return;
+                if (_zoomMarker == null)
+                {
+                    _zoomMarker = new Ellipse
+                    {
+                        Width = 10,
+                        Height = 10,
+                        Fill = new SolidColorBrush(Color.FromArgb(0x50, 0x00, 0x7A, 0xCC)), // 半透明藍
+                        Stroke = new SolidColorBrush(Color.FromArgb(0x90, 0x00, 0x7A, 0xCC)),
+                        StrokeThickness = 1,
+                        Visibility = Visibility.Collapsed,
+                        IsHitTestVisible = false
+                    };
+                    canvas.Children.Add(_zoomMarker);
+                }
+                // 標記使用內容座標，受 RenderTransform 影響
+                System.Windows.Controls.Canvas.SetLeft(_zoomMarker, contentPt.X - _zoomMarker.Width / 2);
+                System.Windows.Controls.Canvas.SetTop(_zoomMarker, contentPt.Y - _zoomMarker.Height / 2);
+                _zoomMarker.Visibility = Visibility.Visible;
+                _zoomMarkerTimer?.Stop();
+                _zoomMarkerTimer?.Start();
             }
             catch { }
         }

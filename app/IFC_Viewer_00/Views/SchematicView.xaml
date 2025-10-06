@@ -35,6 +35,10 @@
                 <CheckBox Content="標籤" Margin="4,0" IsChecked="{Binding ShowLabels}"/>
             </StackPanel>
 
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="8,0,0,0">
+                <CheckBox Content="顯示縮放錨點" Margin="4,0" IsChecked="{Binding ShowZoomAnchor}"/>
+            </StackPanel>
+
             <Separator Margin="8,0"/>
             <!-- Legend + Color settings (Phase 0) -->
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
