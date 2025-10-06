@@ -16,9 +16,7 @@ namespace IFC_Viewer_00.Views
         private const double MinScale = 0.1;
         private const double MaxScale = 10.0;
         private const double ZoomFactor = 1.15; // 每格滾輪的縮放倍率
-        // Phase 2: 橡皮筋框選
-        private bool _isRubberBandSelecting = false;
-        private Point _rubberStart;
+    // 已取消：橡皮筋框選
 
         public SchematicView()
         {
@@ -43,19 +41,6 @@ namespace IFC_Viewer_00.Views
             {
                 if (this.DataContext is SchematicViewModel svm)
                 {
-                    // 綁定 Canvas 的預覽滑鼠事件，以確保不被子元素（節點/邊）攔截
-                    try
-                    {
-                        var canvas = this.FindName("Canvas") as System.Windows.Controls.Canvas;
-                        if (canvas != null)
-                        {
-                            canvas.PreviewMouseLeftButtonDown += Canvas_PreviewMouseLeftButtonDown;
-                            canvas.PreviewMouseMove += Canvas_PreviewMouseMove;
-                            canvas.PreviewMouseLeftButtonUp += Canvas_PreviewMouseLeftButtonUp;
-                        }
-                    }
-                    catch { }
-
                     // 初始化縮放中心為畫布中心
                     try
                     {
@@ -139,105 +124,7 @@ namespace IFC_Viewer_00.Views
             catch { }
         }
 
-        // 取得 Canvas 內容座標（將 RenderTransform 反轉套用）
-        private System.Windows.Point GetContentPosition(System.Windows.Point pOnCanvas)
-        {
-            try
-            {
-                var canvas = this.FindName("Canvas") as System.Windows.Controls.Canvas;
-                if (canvas == null) return pOnCanvas;
-                if (canvas.RenderTransform is System.Windows.Media.TransformGroup tg)
-                {
-                    var m = tg.Value; // Scale 然後 Translate
-                    if (m.HasInverse)
-                    {
-                        m.Invert();
-                        return m.Transform(pOnCanvas);
-                    }
-                }
-            }
-            catch { }
-            return pOnCanvas;
-        }
-
-        private void Canvas_PreviewMouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
-        {
-            try
-            {
-                var canvas = sender as System.Windows.Controls.Canvas;
-                if (canvas == null) return;
-                var p = e.GetPosition(canvas);
-                // 使用內容座標（未縮放/平移前的邏輯座標）
-                var content = GetContentPosition(p);
-                _rubberStart = content;
-                _isRubberBandSelecting = true;
-                var rect = this.FindName("RubberBand") as System.Windows.Shapes.Rectangle;
-                if (rect != null)
-                {
-                    System.Windows.Controls.Canvas.SetLeft(rect, content.X);
-                    System.Windows.Controls.Canvas.SetTop(rect, content.Y);
-                    rect.Width = 0;
-                    rect.Height = 0;
-                    rect.Visibility = Visibility.Visible;
-                }
-                canvas.CaptureMouse();
-                e.Handled = true;
-            }
-            catch { }
-        }
-
-        private void Canvas_PreviewMouseMove(object sender, System.Windows.Input.MouseEventArgs e)
-        {
-            try
-            {
-                if (!_isRubberBandSelecting || e.LeftButton != System.Windows.Input.MouseButtonState.Pressed) return;
-                var canvas = sender as System.Windows.Controls.Canvas;
-                var rect = this.FindName("RubberBand") as System.Windows.Shapes.Rectangle;
-                if (canvas == null || rect == null) return;
-                var p = e.GetPosition(canvas);
-                var content = GetContentPosition(p);
-                double x = Math.Min(content.X, _rubberStart.X);
-                double y = Math.Min(content.Y, _rubberStart.Y);
-                double w = Math.Abs(content.X - _rubberStart.X);
-                double h = Math.Abs(content.Y - _rubberStart.Y);
-                System.Windows.Controls.Canvas.SetLeft(rect, x);
-                System.Windows.Controls.Canvas.SetTop(rect, y);
-                rect.Width = w;
-                rect.Height = h;
-                e.Handled = true;
-            }
-            catch { }
-        }
-
-        private void Canvas_PreviewMouseLeftButtonUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
-        {
-            try
-            {
-                var canvas = sender as System.Windows.Controls.Canvas;
-                var rect = this.FindName("RubberBand") as System.Windows.Shapes.Rectangle;
-                if (canvas == null || rect == null) return;
-                var x = System.Windows.Controls.Canvas.GetLeft(rect);
-                var y = System.Windows.Controls.Canvas.GetTop(rect);
-                var w = rect.Width;
-                var h = rect.Height;
-                rect.Visibility = Visibility.Collapsed;
-                _isRubberBandSelecting = false;
-                canvas.ReleaseMouseCapture();
-
-                if (w > 2 && h > 2 && this.DataContext is SchematicViewModel vm)
-                {
-                    var selected = vm.Nodes.Where(n => n.X >= x && n.X <= x + w && n.Y >= y && n.Y <= y + h)
-                                           .Select(n => (n.Node.Entity as Xbim.Common.IPersistEntity)?.EntityLabel ?? 0)
-                                           .Where(id => id != 0)
-                                           .ToList();
-                    bool additive = (System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Control) == System.Windows.Input.ModifierKeys.Control
-                                 || (System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Shift) == System.Windows.Input.ModifierKeys.Shift;
-                    vm.SelectByEntityLabels(selected, additive);
-                }
-                e.Handled = true;
-            }
-            catch { }
-        }
+        // 刪除：橡皮筋相關輔助與事件處理器（不再需要）
 
         private void OnPreviewMouseWheel(object sender, System.Windows.Input.MouseWheelEventArgs e)
         {
@@ -279,23 +166,6 @@ namespace IFC_Viewer_00.Views
                     this.Cursor = System.Windows.Input.Cursors.SizeAll;
                     this.CaptureMouse();
                 }
-                else if (e.ChangedButton == System.Windows.Input.MouseButton.Left)
-                {
-                    var canvas = this.FindName("Canvas") as System.Windows.Controls.Canvas;
-                    if (canvas == null) return;
-                    var p = e.GetPosition(canvas);
-                    _rubberStart = p;
-                    _isRubberBandSelecting = true;
-                    var rect = this.FindName("RubberBand") as System.Windows.Shapes.Rectangle;
-                    if (rect != null)
-                    {
-                        System.Windows.Controls.Canvas.SetLeft(rect, p.X);
-                        System.Windows.Controls.Canvas.SetTop(rect, p.Y);
-                        rect.Width = 0;
-                        rect.Height = 0;
-                        rect.Visibility = Visibility.Visible;
-                    }
-                }
             }
             catch { }
         }
@@ -321,21 +191,6 @@ namespace IFC_Viewer_00.Views
                     translate.X += dx;
                     translate.Y += dy;
                 }
-                else if (_isRubberBandSelecting && e.LeftButton == System.Windows.Input.MouseButtonState.Pressed)
-                {
-                    var canvas = this.FindName("Canvas") as System.Windows.Controls.Canvas;
-                    var rect = this.FindName("RubberBand") as System.Windows.Shapes.Rectangle;
-                    if (canvas == null || rect == null) return;
-                    var p = e.GetPosition(canvas);
-                    double x = Math.Min(p.X, _rubberStart.X);
-                    double y = Math.Min(p.Y, _rubberStart.Y);
-                    double w = Math.Abs(p.X - _rubberStart.X);
-                    double h = Math.Abs(p.Y - _rubberStart.Y);
-                    System.Windows.Controls.Canvas.SetLeft(rect, x);
-                    System.Windows.Controls.Canvas.SetTop(rect, y);
-                    rect.Width = w;
-                    rect.Height = h;
-                }
             }
             catch { }
         }
@@ -349,32 +204,6 @@ namespace IFC_Viewer_00.Views
                     _lastPanPoint = null;
                     this.Cursor = System.Windows.Input.Cursors.Arrow;
                     this.ReleaseMouseCapture();
-                }
-                else if (e.ChangedButton == System.Windows.Input.MouseButton.Left)
-                {
-                    var rect = this.FindName("RubberBand") as System.Windows.Shapes.Rectangle;
-                    var canvas = this.FindName("Canvas") as System.Windows.Controls.Canvas;
-                    if (rect != null && canvas != null)
-                    {
-                        var x = System.Windows.Controls.Canvas.GetLeft(rect);
-                        var y = System.Windows.Controls.Canvas.GetTop(rect);
-                        var w = rect.Width;
-                        var h = rect.Height;
-                        rect.Visibility = Visibility.Collapsed;
-                        _isRubberBandSelecting = false;
-
-                        if (w > 2 && h > 2 && this.DataContext is SchematicViewModel vm)
-                        {
-                            // 計算落在矩形中的節點，注意節點位置是以中心點 X/Y
-                            var selected = vm.Nodes.Where(n => n.X >= x && n.X <= x + w && n.Y >= y && n.Y <= y + h)
-                                                   .Select(n => (n.Node.Entity as Xbim.Common.IPersistEntity)?.EntityLabel ?? 0)
-                                                   .Where(id => id != 0)
-                                                   .ToList();
-                            bool additive = (System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Control) == System.Windows.Input.ModifierKeys.Control
-                                         || (System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Shift) == System.Windows.Input.ModifierKeys.Shift;
-                            vm.SelectByEntityLabels(selected, additive);
-                        }
-                    }
                 }
             }
             catch { }

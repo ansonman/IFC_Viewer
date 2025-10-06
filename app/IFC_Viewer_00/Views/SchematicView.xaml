@@ -229,8 +229,6 @@
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>
-                <!-- Phase 2: 橡皮筋框選矩形（位於最上層） -->
-                <Rectangle x:Name="RubberBand" Stroke="#007ACC" StrokeDashArray="4,2" StrokeThickness="1" Fill="#30007ACC" Visibility="Collapsed"/>
             </Canvas>
         </ScrollViewer>
 
