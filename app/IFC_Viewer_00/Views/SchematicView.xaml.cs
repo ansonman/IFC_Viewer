@@ -41,7 +41,7 @@ namespace IFC_Viewer_00.Views
             {
                 if (this.DataContext is SchematicViewModel svm)
                 {
-                    // 初始化縮放中心為畫布中心
+                    // 初始化縮放中心（使用 0,0；我們用 translate 配合滑鼠位置維持錨點）
                     try
                     {
                         var canvas = this.FindName("Canvas") as System.Windows.Controls.Canvas;
@@ -52,8 +52,8 @@ namespace IFC_Viewer_00.Views
                             {
                                 if (tg.Children.Count >= 2 && tg.Children[0] is System.Windows.Media.ScaleTransform sc)
                                 {
-                                    sc.CenterX = canvas.ActualWidth / 2.0;
-                                    sc.CenterY = canvas.ActualHeight / 2.0;
+                                    sc.CenterX = 0.0;
+                                    sc.CenterY = 0.0;
                                 }
                             }
                         }
@@ -114,6 +114,12 @@ namespace IFC_Viewer_00.Views
                                         var tid = (ev.End.Node.Entity as Xbim.Common.IPersistEntity)?.EntityLabel ?? 0;
                                         ev.IsSelected = (sid != 0 && set.Contains(sid)) || (tid != 0 && set.Contains(tid));
                                     }
+                                    // 同步 3D 高亮（以選取為準，清理舊高亮）
+                                    if (svc != null)
+                                    {
+                                        var labels = sel.Selected?.ToArray() ?? Array.Empty<int>();
+                                        svc.HighlightEntities(labels, clearPrevious: true);
+                                    }
                                 }
                                 catch { }
                             };
@@ -138,18 +144,24 @@ namespace IFC_Viewer_00.Views
                 var translate = tg.Children[1] as System.Windows.Media.TranslateTransform;
                 if (scale == null || translate == null) return;
 
+                // 以滑鼠位置為中心縮放（任何位置皆適用）
                 var mousePos = e.GetPosition(canvas);
-                double zoom = e.Delta > 0 ? ZoomFactor : (1.0 / ZoomFactor);
+                // 取得當前內容座標（RenderTransform 之前的邏輯座標）
+                var m = tg.Value;
+                if (!m.HasInverse) return;
+                m.Invert();
+                var contentPt = m.Transform(mousePos);
 
+                double zoom = e.Delta > 0 ? ZoomFactor : (1.0 / ZoomFactor);
                 double newScale = Math.Max(MinScale, Math.Min(MaxScale, _currentScale * zoom));
-                zoom = newScale / _currentScale; // clamp 後的實際倍率
                 _currentScale = newScale;
 
-                // 以滑鼠位置為中心縮放（保持滑鼠下的內容固定）
-                translate.X = (translate.X - mousePos.X) * zoom + mousePos.X;
-                translate.Y = (translate.Y - mousePos.Y) * zoom + mousePos.Y;
+                // 更新縮放
                 scale.ScaleX = _currentScale;
                 scale.ScaleY = _currentScale;
+                // 設定平移，讓 contentPt 在縮放後仍落在 mousePos
+                translate.X = mousePos.X - contentPt.X * _currentScale;
+                translate.Y = mousePos.Y - contentPt.Y * _currentScale;
 
                 e.Handled = true;
             }
