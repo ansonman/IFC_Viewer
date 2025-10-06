@@ -587,6 +587,31 @@ dotnet test .\tests\IFC_Viewer_00.Tests\IFC_Viewer_00.Tests.csproj --nologo
 
 ---
 
+## 2025-10-06：PSC P2 互動調整（部分成功，記錄待後續除錯）
+
+狀態摘要：
+- 新增「顯示縮放錨點」開關（ViewModel: `ShowZoomAnchor`，預設關閉；XAML 工具列已加入 CheckBox）。
+- 滑鼠居中縮放（任何畫布位置）與中鍵平移維持可用；單擊選取會自動清除前次 3D 高亮再套用目前選取。
+- 機能已可建置（Release 成功；NU1701 相容性警告如常），但實測「未能完全成功」，先記錄待後續 debug。
+
+觀察與可能根因（待驗證）：
+- 縮放錨點藍點偶爾未在預期位置顯示或未如期隱藏，可能是內容座標與 RenderTransform 倒推時機差或定時器競態。
+- 3D 高亮切換偶爾未即時反映，可能與 SelectionService 的 Selected 集合更新/事件次序或跨執行緒 UI 更新有關。
+
+下一步 Debug 計畫：
+1) 於 `OnPreviewMouseWheel` 與 `ShowZoomMarker` 加入 [FTA] 細粒度日誌：滑鼠座標、倒推 contentPt、scale/translate 值、顯示與隱藏時戳。
+2) 在 SelectionChanged 同步 3D 高亮前後，記錄 label 集合與 `HighlightEntities(..., clearPrevious)` 的呼叫順序與參數。
+3) 驗證 `TransformGroup.Value` 的反矩陣是否每次都 `HasInverse=true`；若否，退回以 `ScaleTransform`/`TranslateTransform` 個別組合手算逆映射。
+4) 排除 UI 範圍問題：確保 `Canvas.ActualWidth/ActualHeight` 與 ScrollViewer 可視區行為在縮放後仍一致。
+5) 若仍有 flakiness，暫時取消錨點標記（關閉 `ShowZoomAnchor`）以先確保互動穩定性，再逐步回滾測試。
+
+品質狀態：
+- Build：PASS（Release）
+- Lint/型別：無新增錯誤
+- 測試：無自動化；將以 [FTA] 與手動步驟先行。
+
+備註：待完成後會補 Schematic 報告與 README（PSC P2 操作）並收斂錨點視覺為診斷模式。
+
 ## 2025-09-18 測試與服務穩健性：整合測試通過、保底驗證與 Fake 控制項
 
 本次聚焦讓「從檔案載入到 3D 控制項接收模型」的流程在不同 Xbim 版本下都可被可靠驗證。

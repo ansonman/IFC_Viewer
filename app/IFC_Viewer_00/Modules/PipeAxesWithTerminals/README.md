@@ -98,8 +98,13 @@ async Task ShowPipeAxesWithTerminalsAsync(IfcStore model)
 ## 快捷鍵（Keyboard Shortcuts）
 以下為目前應用程式中已綁定，且與本模組相關或常用的快捷鍵：
 
-- Ctrl + Shift + P：開啟「Pipe軸線 + 紅點」（本模組）
-- Ctrl + Shift + F：開啟「FlowTerminal 紅點」
-- Ctrl + Shift + S：開啟「IFC Schema Viewer」
 
 若要自訂或在其他專案中加入這些快捷鍵，可在主視窗 XAML 的 `<Window.InputBindings>` 區塊綁定對應命令。
+
+---
+
+## 診斷選項：顯示縮放錨點（P2）
+
+在 Schematic 視窗工具列可勾選「顯示縮放錨點」來顯示一個短暫的半透明藍點，代表本次滾輪縮放的錨點（滑鼠所在內容座標）。
+- 預設關閉，僅建議於測試/診斷時開啟。
+- 若發現錨點位置與預期不符，請搭配 DEVELOPMENT_LOG 的 Debug 計畫收集 [FTA] 日誌。
