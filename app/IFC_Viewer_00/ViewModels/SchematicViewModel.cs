@@ -68,6 +68,9 @@ namespace IFC_Viewer_00.ViewModels
     private double _defaultEdgeThickness = 2.0; // px
     public bool SnapEnabled { get; private set; } = true;
     public bool LevelsVisible { get; private set; } = true;
+    // 顯示管徑標籤（置於邊的中點）
+    private bool _showPipeSizeTags = true;
+    public bool ShowPipeSizeTags { get => _showPipeSizeTags; set { if (_showPipeSizeTags != value) { _showPipeSizeTags = value; OnPropertyChanged(nameof(ShowPipeSizeTags)); } } }
 
     // Phase 2: 圖層切換（預設全開）
     private bool _showTerminals = true;
@@ -322,6 +325,24 @@ namespace IFC_Viewer_00.ViewModels
             else if (e.Connection != null) AppendIfcPsets(e.Connection);
         }
 
+        private static string? FormatPipeSizeLabel(SchematicEdge e)
+        {
+            try
+            {
+                double? dn = e.NominalDiameterMm;
+                double? od = e.OuterDiameterMm;
+                string fmt(double v)
+                {
+                    var vi = Math.Round(v);
+                    return Math.Abs(vi - v) < 0.05 ? vi.ToString("0") : v.ToString("0.#");
+                }
+                if (dn.HasValue && dn.Value > 0) return $"DN{fmt(dn.Value)}";
+                if (od.HasValue && od.Value > 0) return $"Ø{fmt(od.Value)}mm";
+                return null;
+            }
+            catch { return null; }
+        }
+
         private void AppendIfcPsets(IPersistEntity? ent)
         {
             if (ent == null) return;
@@ -446,6 +467,7 @@ namespace IFC_Viewer_00.ViewModels
                     EdgeBrush = PipeEdgeBrush,
                     Thickness = _defaultEdgeThickness
                 };
+                ev.SizeLabel = FormatPipeSizeLabel(e);
                 Edges.Add(ev);
             }
             FitToCanvas(Nodes, CanvasWidth, CanvasHeight, CanvasPadding);
@@ -651,6 +673,7 @@ namespace IFC_Viewer_00.ViewModels
                     EdgeBrush = GetDarkerBrush(s.NodeBrush),
                     Thickness = _defaultEdgeThickness
                 };
+                ev.SizeLabel = FormatPipeSizeLabel(e);
                 Edges.Add(ev);
             }
 
@@ -725,6 +748,7 @@ namespace IFC_Viewer_00.ViewModels
                     EdgeBrush = GetDarkerBrush(s.NodeBrush),
                     Thickness = _defaultEdgeThickness
                 };
+                ev.SizeLabel = FormatPipeSizeLabel(e);
                 Edges.Add(ev);
             }
             BuildLevelLines(data);
@@ -817,6 +841,7 @@ namespace IFC_Viewer_00.ViewModels
                     EdgeBrush = GetDarkerBrush(s.NodeBrush),
                     Thickness = _defaultEdgeThickness
                 };
+                ev.SizeLabel = FormatPipeSizeLabel(e);
                 Edges.Add(ev);
             }
 
@@ -1045,8 +1070,43 @@ namespace IFC_Viewer_00.ViewModels
     public class SchematicEdgeView : INotifyPropertyChanged
     {
         public SchematicEdge Edge { get; set; } = null!;
-        public SchematicNodeView Start { get; set; } = null!;
-        public SchematicNodeView End { get; set; } = null!;
+        private SchematicNodeView _start = null!;
+        public SchematicNodeView Start
+        {
+            get => _start;
+            set
+            {
+                if (!ReferenceEquals(_start, value))
+                {
+                    if (_start != null) _start.PropertyChanged -= OnEndpointChanged;
+                    _start = value;
+                    if (_start != null) _start.PropertyChanged += OnEndpointChanged;
+                    OnPropertyChanged(nameof(Start));
+                    OnPropertyChanged(nameof(MidX));
+                    OnPropertyChanged(nameof(MidY));
+                    OnPropertyChanged(nameof(AngleDeg));
+                }
+            }
+        }
+
+        private SchematicNodeView _end = null!;
+        public SchematicNodeView End
+        {
+            get => _end;
+            set
+            {
+                if (!ReferenceEquals(_end, value))
+                {
+                    if (_end != null) _end.PropertyChanged -= OnEndpointChanged;
+                    _end = value;
+                    if (_end != null) _end.PropertyChanged += OnEndpointChanged;
+                    OnPropertyChanged(nameof(End));
+                    OnPropertyChanged(nameof(MidX));
+                    OnPropertyChanged(nameof(MidY));
+                    OnPropertyChanged(nameof(AngleDeg));
+                }
+            }
+        }
         private Brush _edgeBrush = Brushes.DarkSlateGray;
         public Brush EdgeBrush { get => _edgeBrush; set { if (_edgeBrush != value) { _edgeBrush = value; OnPropertyChanged(nameof(EdgeBrush)); } } }
         private double _thickness = 2.0;
@@ -1055,6 +1115,35 @@ namespace IFC_Viewer_00.ViewModels
         public bool IsSelected { get => _isSelected; set { if (_isSelected != value) { _isSelected = value; OnPropertyChanged(nameof(IsSelected)); } } }
     private bool _visible = true;
     public bool Visible { get => _visible; set { if (_visible != value) { _visible = value; OnPropertyChanged(nameof(Visible)); } } }
+
+        // 供管徑標籤使用
+        private string? _sizeLabel;
+        public string? SizeLabel { get => _sizeLabel; set { if (_sizeLabel != value) { _sizeLabel = value; OnPropertyChanged(nameof(SizeLabel)); OnPropertyChanged(nameof(MidX)); OnPropertyChanged(nameof(MidY)); } } }
+        public double MidX => ((Start?.X ?? 0.0) + (End?.X ?? 0.0)) / 2.0;
+        public double MidY => ((Start?.Y ?? 0.0) + (End?.Y ?? 0.0)) / 2.0;
+        public double AngleDeg
+        {
+            get
+            {
+                double sx = Start?.X ?? 0.0;
+                double sy = Start?.Y ?? 0.0;
+                double ex = End?.X ?? 0.0;
+                double ey = End?.Y ?? 0.0;
+                double dx = ex - sx;
+                double dy = ey - sy;
+                return Math.Atan2(dy, dx) * 180.0 / Math.PI;
+            }
+        }
+
+        private void OnEndpointChanged(object? sender, PropertyChangedEventArgs e)
+        {
+            if (e.PropertyName == nameof(SchematicNodeView.X) || e.PropertyName == nameof(SchematicNodeView.Y))
+            {
+                OnPropertyChanged(nameof(MidX));
+                OnPropertyChanged(nameof(MidY));
+                OnPropertyChanged(nameof(AngleDeg));
+            }
+        }
 
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));

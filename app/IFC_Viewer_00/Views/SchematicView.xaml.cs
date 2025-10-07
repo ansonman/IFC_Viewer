@@ -8,6 +8,7 @@ using System.Windows.Threading;
 using WF = System.Windows.Forms;
 using IFC_Viewer_00.Services;
 using IFC_Viewer_00.ViewModels;
+using IFC_Viewer_00.Views.Dialogs;
 
 namespace IFC_Viewer_00.Views
 {
@@ -414,6 +415,27 @@ namespace IFC_Viewer_00.Views
                 {
                     var c = System.Windows.Media.Color.FromArgb(255, dlg.Color.R, dlg.Color.G, dlg.Color.B);
                     vm.SetColors(pipeEdge: new System.Windows.Media.SolidColorBrush(c));
+                }
+            }
+            catch { }
+        }
+
+        private void OpenSystemFilter_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (this.DataContext is not SchematicViewModel vm) return;
+                // 以相同集合做編輯（即時預覽），若要先預覽再套用可改成複本
+                var dlg = new SystemFilterDialog { Owner = this, DataContext = vm.Systems };
+                var ok = dlg.ShowDialog();
+                if (ok == true)
+                {
+                    vm.ApplySystemVisibilityNow();
+                }
+                else
+                {
+                    // 取消不需特別處理（我們直接編輯同一集合，取消僅表示不額外動作）
+                    vm.ApplySystemVisibilityNow();
                 }
             }
             catch { }

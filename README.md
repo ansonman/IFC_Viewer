@@ -90,10 +90,21 @@
 - 工具列按鈕：
   - 重置視圖：將縮放/平移復位，並呼叫 `RefitToCanvas()` 將當前節點座標重新適配畫布。
   - 重新布局：重新執行力導向佈局，並自動適配畫布（Refit）。
+  - 系統過濾…：開啟彈出視窗，列出目前畫布包含的 System Abbreviation（無縮寫時以 SystemName 退回；再無則標示「(未指定)」）。勾選即可顯示/隱藏對應系統，立即生效且不重建拓撲。
 - Fit-to-Canvas：
   - 一般方法：`SchematicViewModel.FitToCanvas()` 會依據 `CanvasWidth/CanvasHeight/CanvasPadding`（預設 1600/1000/40）計算邊界框、縮放與偏移，更新 NodeView 的 `X/Y`。
   - 資料載入：`LoadData(SchematicData)` 版實作按需使用固定 800x600 畫布與 padding 20，先更新模型 `Node.Position2D`，再同步 NodeView `X/Y` 與建立 EdgeView；滿足「系統先、僅 Ports」流程下的即時適配需求。
   - 最佳投影面：以「最小跨度軸剔除」策略自動選擇投影平面（捨棄 X/Y/Z 中跨度最小者，保留另兩軸作為 2D）；平手時偏好 XY → XZ → YZ。
+
+### 管徑標籤（Pipe Size Tags）
+- 內容：在每條管線（邊）中點顯示尺寸標籤，優先顯示 DN（mm），若無 DN 則顯示外徑 ØODmm。
+- 方向：標籤會自動沿線方向旋轉，與管線方向對齊，避免閱讀角度不一致。
+- 縮放：標籤採用反向縮放，字級與框尺寸不會隨 Canvas 縮放而變化，縮放畫布時仍保持一致可讀性。
+- 位置：標籤以線段中點為錨點，並以內容中心對齊，避免偏移。
+- 開關：工具列「管徑」勾選框（在「終端/管線/標籤」旁）可快速開/關顯示。
+- 限制：
+  - 當管徑資料缺失（DN/OD 皆無）時，不顯示標籤。
+  - 若邊被系統過濾隱藏或圖層關閉，標籤亦會隱藏。
 
 ### AS 原理圖流程（兩段 IfcPipeSegment）
 - 目的：以兩段參考管件推導投影平面，將系統 Ports 投影成 2D 黑點，並用黑線連接具有 `IfcRelConnectsPorts` 的 Port 對。
