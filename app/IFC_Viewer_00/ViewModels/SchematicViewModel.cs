@@ -12,6 +12,7 @@ using System.Windows;
 using Xbim.Common;
 using IFC_Viewer_00.Models;
 using IFC_Viewer_00.Services;
+using Xbim.Ifc4.Interfaces;
 
 namespace IFC_Viewer_00.ViewModels
 {
@@ -26,6 +27,9 @@ namespace IFC_Viewer_00.ViewModels
     public ObservableCollection<SystemFilterOption> Systems { get; } = new();
         // V1: 日誌文字顯示
         public ObservableCollection<string> Logs { get; } = new();
+        // 右側屬性面板：選取與屬性
+        public ObservableCollection<PropertyEntry> Properties { get; } = new();
+        public string SelectedTitle { get; private set; } = "(未選取)";
 
         public void AddLog(string msg)
         {
@@ -146,6 +150,8 @@ namespace IFC_Viewer_00.ViewModels
                         }
                     }
                     RequestHighlight?.Invoke(nv.Node.Entity, !ctrl);
+                    // 屬性面板（單選）
+                    SetSelection(nv, null);
                 }
             });
             EdgeClickCommand = new SchematicCommand(obj =>
@@ -165,6 +171,7 @@ namespace IFC_Viewer_00.ViewModels
                         else _selection.SetSelection(ids, SelectionOrigin.Schematic);
                     }
                     RequestHighlight?.Invoke(ev.Start.Node.Entity, !ctrl);
+                    SetSelection(null, ev);
                 }
             });
 
@@ -223,6 +230,128 @@ namespace IFC_Viewer_00.ViewModels
 
             // 啟動載入既有顏色設定
             LoadColorsFromDisk();
+        }
+
+        // ===== 右側屬性面板 =====
+        public class PropertyEntry
+        {
+            public string Key { get; set; } = string.Empty;
+            public string? Value { get; set; }
+        }
+
+        private void SetSelection(SchematicNodeView? node, SchematicEdgeView? edge)
+        {
+            try
+            {
+                Properties.Clear();
+                if (node != null)
+                {
+                    SelectedTitle = $"節點: {node.Node?.Name}";
+                    if (node.Node != null) BuildPropertiesFromNode(node.Node!);
+                    OnPropertyChanged(nameof(SelectedTitle));
+                    return;
+                }
+                if (edge != null)
+                {
+                    SelectedTitle = $"邊: {edge.Edge?.Id}";
+                    if (edge.Edge != null) BuildPropertiesFromEdge(edge.Edge!);
+                    OnPropertyChanged(nameof(SelectedTitle));
+                    return;
+                }
+                SelectedTitle = "(未選取)";
+                OnPropertyChanged(nameof(SelectedTitle));
+            }
+            catch { }
+        }
+
+        private void Add(string key, object? value)
+        {
+            try
+            {
+                string v = value switch
+                {
+                    null => string.Empty,
+                    double d => d.ToString("0.###"),
+                    System.Windows.Media.Media3D.Point3D p => $"({p.X:0.##},{p.Y:0.##},{p.Z:0.##})",
+                    System.Windows.Point p2 => $"({p2.X:0.##},{p2.Y:0.##})",
+                    bool b => b ? "True" : "False",
+                    _ => value.ToString() ?? string.Empty
+                };
+                Properties.Add(new PropertyEntry { Key = key, Value = v });
+            }
+            catch { }
+        }
+
+        private void BuildPropertiesFromNode(SchematicNode n)
+        {
+            if (n == null) return;
+            Add("Id", n.Id);
+            Add("Name", n.Name);
+            Add("IfcType", n.IfcType);
+            Add("HostIfcType", n.HostIfcType);
+            Add("HostLabel", n.HostLabel);
+            Add("PortLabel", n.PortLabel);
+            Add("System", n.SystemName);
+            Add("System Abbreviation", n.SystemAbbreviation);
+            Add("System Type", n.SystemType);
+            Add("Level", n.LevelName);
+            Add("Pos3D", n.Position3D);
+            Add("Pos2D", n.Position2D);
+            // IFC Psets
+            AppendIfcPsets(n.Entity);
+        }
+
+        private void BuildPropertiesFromEdge(SchematicEdge e)
+        {
+            if (e == null) return;
+            Add("Id", e.Id);
+            Add("Start", e.StartNode?.Name);
+            Add("End", e.EndNode?.Name);
+            Add("System", e.SystemName);
+            Add("System Abbreviation", e.SystemAbbreviation);
+            Add("System Type", e.SystemType);
+            Add("Level", e.LevelName);
+            Add("Orientation", e.Orientation.ToString());
+            Add("IsMainPipe", e.IsMainPipe);
+            Add("NominalDiameter(mm)", e.NominalDiameterMm);
+            Add("OuterDiameter(mm)", e.OuterDiameterMm);
+            Add("DN Source", e.ValueSourceNominalDiameter);
+            Add("OD Source", e.ValueSourceOuterDiameter);
+            // IFC Psets（優先使用 Edge.Entity）
+            if (e.Entity != null) AppendIfcPsets(e.Entity);
+            else if (e.Connection != null) AppendIfcPsets(e.Connection);
+        }
+
+        private void AppendIfcPsets(IPersistEntity? ent)
+        {
+            if (ent == null) return;
+            try
+            {
+                // 如果是 IIfcObjectDefinition，列出其 IsDefinedBy -> IIfcPropertySet
+                if (ent is IIfcObject obj)
+                {
+                    foreach (var rel in obj.IsDefinedBy ?? Enumerable.Empty<IIfcRelDefines>())
+                    {
+                        if (rel is IIfcRelDefinesByProperties rdp)
+                        {
+                            var pset = rdp.RelatingPropertyDefinition as IIfcPropertySet;
+                            if (pset == null) continue;
+                            var pname = IFC_Viewer_00.Services.IfcStringHelper.FromValue(pset.Name) ?? "Pset";
+                            foreach (var p in pset.HasProperties ?? Enumerable.Empty<IIfcProperty>())
+                            {
+                                var n = IFC_Viewer_00.Services.IfcStringHelper.FromValue(p?.Name) ?? "(prop)";
+                                string val = string.Empty;
+                                if (p is IIfcPropertySingleValue sv)
+                                {
+                                    try { val = sv.NominalValue?.ToString() ?? string.Empty; } catch { }
+                                }
+                                Add($"Pset[{pname}].{n}", val);
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
         }
 
         // Phase 2: 由框選等行為觸發的批次選取（支援取代/累加）
@@ -1253,7 +1382,10 @@ namespace IFC_Viewer_00.ViewModels
         public class SystemFilterOption : INotifyPropertyChanged
         {
             private bool _isChecked = true;
-            public string Name { get; set; } = string.Empty;
+            // Key 用於邏輯比對（以縮寫為主，無則用全名，再無則未指定）
+            public string Key { get; set; } = string.Empty;
+            // Display 顯示：縮寫 – 全名（盡量完整）
+            public string Display { get; set; } = string.Empty;
             public bool IsChecked
             {
                 get => _isChecked;
@@ -1269,20 +1401,38 @@ namespace IFC_Viewer_00.ViewModels
             try
             {
                 Systems.Clear();
-                var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var n in data.Nodes)
+                // 彙整（key=縮寫或名稱；display=縮寫 – 全名）
+                var map = new Dictionary<string, (string abbr, string name)>(StringComparer.OrdinalIgnoreCase);
+                void addEntry(string? abbr, string? name)
                 {
-                    var s = string.IsNullOrWhiteSpace(n.SystemName) ? UnassignedSystem : n.SystemName!;
-                    names.Add(s);
+                    string key = !string.IsNullOrWhiteSpace(abbr)
+                        ? abbr!.Trim()
+                        : (!string.IsNullOrWhiteSpace(name) ? name!.Trim() : UnassignedSystem);
+                    string a = abbr?.Trim() ?? string.Empty;
+                    string n = name?.Trim() ?? string.Empty;
+                    if (map.TryGetValue(key, out var existing))
+                    {
+                        // 補全缺漏（例如原本只有縮寫，遇到含全名的則合併）
+                        var na = string.IsNullOrWhiteSpace(existing.abbr) ? a : existing.abbr;
+                        var nn = string.IsNullOrWhiteSpace(existing.name) ? n : existing.name;
+                        map[key] = (na, nn);
+                    }
+                    else
+                    {
+                        map[key] = (a, n);
+                    }
                 }
-                foreach (var e in data.Edges)
+
+                foreach (var n in data.Nodes) addEntry(n.SystemAbbreviation, n.SystemName);
+                foreach (var e in data.Edges) addEntry(e.SystemAbbreviation, e.SystemName);
+
+                foreach (var kv in map.OrderBy(k => k.Key))
                 {
-                    var s = string.IsNullOrWhiteSpace(e.SystemName) ? UnassignedSystem : e.SystemName!;
-                    names.Add(s);
-                }
-                foreach (var nm in names.OrderBy(x => x))
-                {
-                    var opt = new SystemFilterOption { Name = nm, IsChecked = true };
+                    var (abbr, name) = kv.Value;
+                    string disp = !string.IsNullOrWhiteSpace(abbr) && !string.IsNullOrWhiteSpace(name)
+                        ? $"{abbr} – {name}"
+                        : (!string.IsNullOrWhiteSpace(abbr) ? abbr : (!string.IsNullOrWhiteSpace(name) ? name : UnassignedSystem));
+                    var opt = new SystemFilterOption { Key = kv.Key, Display = disp, IsChecked = true };
                     opt.PropertyChanged += (_, __) => ApplySystemVisibility();
                     Systems.Add(opt);
                 }
@@ -1300,22 +1450,30 @@ namespace IFC_Viewer_00.ViewModels
                     foreach (var ev in Edges) ev.Visible = true;
                     return;
                 }
-                var allowed = Systems.Where(s => s.IsChecked).Select(s => s.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var allowed = Systems.Where(s => s.IsChecked).Select(s => s.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
                 foreach (var nv in Nodes)
                 {
-                    var sys = nv.Node?.SystemName;
-                    var key = string.IsNullOrWhiteSpace(sys) ? UnassignedSystem : sys!;
+                    string key = !string.IsNullOrWhiteSpace(nv.Node?.SystemAbbreviation)
+                        ? nv.Node!.SystemAbbreviation!
+                        : (!string.IsNullOrWhiteSpace(nv.Node?.SystemName) ? nv.Node!.SystemName! : UnassignedSystem);
                     nv.Visible = allowed.Contains(key);
                 }
                 foreach (var ev in Edges)
                 {
-                    var sys = ev.Edge?.SystemName;
-                    var key = string.IsNullOrWhiteSpace(sys) ? UnassignedSystem : sys!;
+                    string key = !string.IsNullOrWhiteSpace(ev.Edge?.SystemAbbreviation)
+                        ? ev.Edge!.SystemAbbreviation!
+                        : (!string.IsNullOrWhiteSpace(ev.Edge?.SystemName) ? ev.Edge!.SystemName! : UnassignedSystem);
                     // 邊要同時考量兩端節點是否可見
                     ev.Visible = allowed.Contains(key) && (ev.Start?.Visible != false) && (ev.End?.Visible != false);
                 }
             }
             catch { }
+        }
+
+        // 提供外部（View/對話窗）在更新勾選後呼叫以套用可見性
+        public void ApplySystemVisibilityNow()
+        {
+            ApplySystemVisibility();
         }
     }
 }

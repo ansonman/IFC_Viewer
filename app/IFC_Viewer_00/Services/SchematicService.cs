@@ -622,6 +622,70 @@ namespace IFC_Viewer_00.Services
         {
             try { return IfcStringHelper.FromValue(sys.Name) ?? IfcStringHelper.FromValue(sys.GlobalId) ?? "UnnamedSystem"; } catch { return "UnnamedSystem"; }
         }
+
+        // 後援：自 Pset 擷取系統資訊（縮寫/名稱/型別），常見於未建立 IfcSystem 分組的模型
+        private static void PopulateSystemFromPsets(IIfcProduct? prod, ref string? sysName, ref string? sysAbbrev, ref string? sysType)
+        {
+            if (prod == null) return;
+            try
+            {
+                // 僅在目前為空時才以 Pset 補值
+                bool needName = string.IsNullOrWhiteSpace(sysName);
+                bool needAbbr = string.IsNullOrWhiteSpace(sysAbbrev);
+                bool needType = string.IsNullOrWhiteSpace(sysType);
+                if (!needName && !needAbbr && !needType) return;
+
+                foreach (var def in (prod as IIfcObject)?.IsDefinedBy ?? Enumerable.Empty<IIfcRelDefines>())
+                {
+                    if (def is not IIfcRelDefinesByProperties rdp) continue;
+                    var pset = rdp.RelatingPropertyDefinition as IIfcPropertySet;
+                    if (pset == null) continue;
+                    foreach (var p in pset.HasProperties ?? Enumerable.Empty<IIfcProperty>())
+                    {
+                        if (p is not IIfcPropertySingleValue sv) continue;
+                        string pname = (IfcStringHelper.FromValue(p.Name) ?? string.Empty).Trim();
+                        string pval = string.Empty; try { pval = sv.NominalValue?.ToString() ?? string.Empty; } catch { }
+                        if (string.IsNullOrWhiteSpace(pval)) continue;
+
+                        // 名稱鍵
+                        if (needName)
+                        {
+                            if (pname.Equals("System Name", StringComparison.OrdinalIgnoreCase) ||
+                                pname.Equals("SystemName", StringComparison.OrdinalIgnoreCase) ||
+                                pname.Equals("System", StringComparison.OrdinalIgnoreCase))
+                            {
+                                sysName = pval; needName = false;
+                            }
+                        }
+                        // 縮寫鍵
+                        if (needAbbr)
+                        {
+                            if (pname.Equals("System Abbreviation", StringComparison.OrdinalIgnoreCase) ||
+                                pname.Equals("SystemAbbreviation", StringComparison.OrdinalIgnoreCase) ||
+                                pname.Equals("Abbreviation", StringComparison.OrdinalIgnoreCase) ||
+                                pname.Equals("Abbrev", StringComparison.OrdinalIgnoreCase))
+                            {
+                                sysAbbrev = pval; needAbbr = false;
+                            }
+                        }
+                        // 型別鍵（可選）
+                        if (needType)
+                        {
+                            if (pname.Equals("System Type", StringComparison.OrdinalIgnoreCase) ||
+                                pname.Equals("SystemType", StringComparison.OrdinalIgnoreCase) ||
+                                pname.Equals("DistributionSystemType", StringComparison.OrdinalIgnoreCase))
+                            {
+                                sysType = pval; needType = false;
+                            }
+                        }
+
+                        if (!needName && !needAbbr && !needType) break;
+                    }
+                    if (!needName && !needAbbr && !needType) break;
+                }
+            }
+            catch { }
+        }
         // SOP 2.0：系統優先，邏輯優先
         // 針對模型中的每一個 IfcSystem / IfcDistributionSystem 產生獨立的 SchematicData
     public async Task<List<SchematicData>> GenerateFromSystemsAsync(IStepModel ifcModel)
@@ -710,6 +774,12 @@ namespace IFC_Viewer_00.Services
                         {
                             var node = CreateNodeFromElement(pf);
                             node.SystemName = metaName; node.SystemAbbreviation = metaAbbr; node.SystemType = metaType;
+                            // Pset 後援
+                            {
+                                string? sn = node.SystemName, sa = node.SystemAbbreviation, st = node.SystemType;
+                                PopulateSystemFromPsets(pf as IIfcProduct, ref sn, ref sa, ref st);
+                                node.SystemName = sn; node.SystemAbbreviation = sa; node.SystemType = st;
+                            }
                             node.LevelName = GetLevelNameForProduct(ifcModel, pf);
                             data.Nodes.Add(node);
                             nodeMap[pe] = node;
@@ -719,6 +789,11 @@ namespace IFC_Viewer_00.Services
                         {
                             var node = CreateNodeFromElement(term);
                             node.SystemName = metaName; node.SystemAbbreviation = metaAbbr; node.SystemType = metaType;
+                            {
+                                string? sn = node.SystemName, sa = node.SystemAbbreviation, st = node.SystemType;
+                                PopulateSystemFromPsets(term as IIfcProduct, ref sn, ref sa, ref st);
+                                node.SystemName = sn; node.SystemAbbreviation = sa; node.SystemType = st;
+                            }
                             node.LevelName = GetLevelNameForProduct(ifcModel, term);
                             data.Nodes.Add(node);
                             nodeMap[pe] = node;
@@ -728,6 +803,11 @@ namespace IFC_Viewer_00.Services
                         {
                             var node = CreateNodeFromElement(valve);
                             node.SystemName = metaName; node.SystemAbbreviation = metaAbbr; node.SystemType = metaType;
+                            {
+                                string? sn = node.SystemName, sa = node.SystemAbbreviation, st = node.SystemType;
+                                PopulateSystemFromPsets(valve as IIfcProduct, ref sn, ref sa, ref st);
+                                node.SystemName = sn; node.SystemAbbreviation = sa; node.SystemType = st;
+                            }
                             node.LevelName = GetLevelNameForProduct(ifcModel, valve);
                             data.Nodes.Add(node);
                             nodeMap[pe] = node;
@@ -774,6 +854,7 @@ namespace IFC_Viewer_00.Services
                             var end = connectedNodes[1];
                             if (!ReferenceEquals(start, end))
                             {
+                                if (start == null || end == null) continue;
                                 string edgeId = Guid.NewGuid().ToString();
                                 try { edgeId = IfcStringHelper.FromValue((seg as IIfcRoot)?.GlobalId) ?? (seg as IPersistEntity)?.EntityLabel.ToString() ?? edgeId; }
                                 catch { }
@@ -794,8 +875,27 @@ namespace IFC_Viewer_00.Services
                                     SystemAbbreviation = metaAbbr,
                                     SystemType = metaType
                                 };
+                                // Pset 後援：若系統資訊仍缺，從管段 Pset 補上
+                                {
+                                    string? esn = edge.SystemName, esa = edge.SystemAbbreviation, est = edge.SystemType;
+                                    PopulateSystemFromPsets(seg as IIfcProduct, ref esn, ref esa, ref est);
+                                    edge.SystemName = esn; edge.SystemAbbreviation = esa; edge.SystemType = est;
+                                }
+                                // 同步到兩端節點（避免節點被視為未指定而被隱藏）
+                                if (start != null)
+                                {
+                                    string? sn = start.SystemName, sa = start.SystemAbbreviation, st = start.SystemType;
+                                    PopulateSystemFromPsets(seg as IIfcProduct, ref sn, ref sa, ref st);
+                                    start.SystemName = sn; start.SystemAbbreviation = sa; start.SystemType = st;
+                                }
+                                if (end != null)
+                                {
+                                    string? sn = end.SystemName, sa = end.SystemAbbreviation, st = end.SystemType;
+                                    PopulateSystemFromPsets(seg as IIfcProduct, ref sn, ref sa, ref st);
+                                    end.SystemName = sn; end.SystemAbbreviation = sa; end.SystemType = st;
+                                }
                                 // Level：以管段為主；若無則回退起點/終點
-                                edge.LevelName = GetLevelNameForProduct(ifcModel, seg) ?? start.LevelName ?? end.LevelName;
+                                edge.LevelName = GetLevelNameForProduct(ifcModel, seg) ?? start?.LevelName ?? end?.LevelName;
 
                                 // Orientation：優先幾何，次選起迄
                                 if (TryGetSegmentDirectionAndLength(seg, out var d, out var lenModel))
@@ -819,14 +919,14 @@ namespace IFC_Viewer_00.Services
                                 {
                                     // 後援：用節點座標向量
                                     var vec = new Vector3D(
-                                        end.Position3D.X - start.Position3D.X,
-                                        end.Position3D.Y - start.Position3D.Y,
-                                        end.Position3D.Z - start.Position3D.Z);
+                                        (end?.Position3D.X ?? 0) - (start?.Position3D.X ?? 0),
+                                        (end?.Position3D.Y ?? 0) - (start?.Position3D.Y ?? 0),
+                                        (end?.Position3D.Z ?? 0) - (start?.Position3D.Z ?? 0));
                                     edge.Orientation = ClassifyOrientationFromVector(vec);
                                 }
                                 data.Edges.Add(edge);
-                                start.Edges.Add(edge);
-                                end.Edges.Add(edge);
+                                start?.Edges.Add(edge);
+                                end?.Edges.Add(edge);
                             }
                         }
                     }
@@ -917,6 +1017,13 @@ namespace IFC_Viewer_00.Services
                 if (TryGetLabel(elem, out var lbl) && !visited.Add(lbl))
                     continue;
                 var node = CreateNodeFromElement(elem);
+                // Pset 後援：若模型未使用 IfcSystem 分組，嘗試從元素 Pset 補系統資訊
+                if (elem is IIfcProduct prod0)
+                {
+                    string? sn = null, sa = null, st = null;
+                    PopulateSystemFromPsets(prod0, ref sn, ref sa, ref st);
+                    node.SystemName = sn; node.SystemAbbreviation = sa; node.SystemType = st;
+                }
                 data.Nodes.Add(node);
 
                 // 掛 Port 對應
@@ -966,6 +1073,10 @@ namespace IFC_Viewer_00.Services
                     Entity = rel as IPersistEntity ?? start.Entity ?? end.Entity,
                     IsInferred = false
                 };
+                // 邊的系統資訊：若可，沿用兩端節點其一的系統（偏好起點）
+                edge.SystemAbbreviation = !string.IsNullOrWhiteSpace(start?.SystemAbbreviation) ? start?.SystemAbbreviation : end?.SystemAbbreviation;
+                edge.SystemName = !string.IsNullOrWhiteSpace(start?.SystemName) ? start?.SystemName : end?.SystemName;
+                edge.SystemType = !string.IsNullOrWhiteSpace(start?.SystemType) ? start?.SystemType : end?.SystemType;
                 data.Edges.Add(edge);
             }
 
@@ -1819,6 +1930,13 @@ namespace IFC_Viewer_00.Services
                             HostIfcType = seg.ExpressType?.Name,
                             HostLabel = (seg as IPersistEntity)?.EntityLabel
                         };
+                        // Pset 後援：補上系統資訊（節點）
+                        {
+                            string? sn = null, sa = null, st = null;
+                            PopulateSystemFromPsets(seg as IIfcProduct, ref sn, ref sa, ref st);
+                            startNode.SystemName = sn; startNode.SystemAbbreviation = sa; startNode.SystemType = st;
+                            endNode.SystemName = sn; endNode.SystemAbbreviation = sa; endNode.SystemType = st;
+                        }
                         data.Nodes.Add(startNode); data.Nodes.Add(endNode);
 
                         var edge = new SchematicEdge
@@ -1832,6 +1950,10 @@ namespace IFC_Viewer_00.Services
                             Connection = (seg as IPersistEntity)!,
                             IsInferred = false
                         };
+                        // Pset 後援：補上系統資訊（邊）
+                        edge.SystemAbbreviation = startNode.SystemAbbreviation ?? endNode.SystemAbbreviation;
+                        edge.SystemName = startNode.SystemName ?? endNode.SystemName;
+                        edge.SystemType = startNode.SystemType ?? endNode.SystemType;
                         // Sprint 1：方向/管徑/樓層
                         edge.Orientation = ClassifyOrientationFromVector(dWorld);
                         ExtractDiameters(ifcModel, seg, out var dn, out var dOuter, out var srcDn, out var srcDo);
@@ -1903,6 +2025,10 @@ namespace IFC_Viewer_00.Services
                         if (pe is IIfcProduct prod)
                         {
                             n.LevelName = GetLevelNameForProduct(ifcModel, prod);
+                            // Pset 後援：終端的系統資訊
+                            string? sn = null, sa = null, st = null;
+                            PopulateSystemFromPsets(prod, ref sn, ref sa, ref st);
+                            n.SystemName = sn; n.SystemAbbreviation = sa; n.SystemType = st;
                         }
                     }
                 }
