@@ -22,6 +22,8 @@ namespace IFC_Viewer_00.ViewModels
         public ObservableCollection<SchematicNodeView> Nodes { get; } = new();
     public ObservableCollection<SchematicEdgeView> Edges { get; } = new();
     public ObservableCollection<LevelLineView> LevelLines { get; } = new();
+    // P3: 系統過濾選項
+    public ObservableCollection<SystemFilterOption> Systems { get; } = new();
         // V1: 日誌文字顯示
         public ObservableCollection<string> Logs { get; } = new();
 
@@ -325,6 +327,9 @@ namespace IFC_Viewer_00.ViewModels
                 nv.Node.Position2D = new System.Windows.Point(nv.X, nv.Y);
             }
             BuildLevelLines(data);
+            // P3: 建立系統過濾並套用可見性
+            BuildSystemFiltersFrom(data);
+            ApplySystemVisibility();
             LogVisualSettings();
             return Task.CompletedTask;
         }
@@ -530,6 +535,9 @@ namespace IFC_Viewer_00.ViewModels
             }
             // 建立樓層線（若有）
             BuildLevelLines(data);
+            // P3: 建立系統過濾並套用可見性
+            BuildSystemFiltersFrom(data);
+            ApplySystemVisibility();
             LogVisualSettings();
 
             return Task.CompletedTask;
@@ -591,6 +599,9 @@ namespace IFC_Viewer_00.ViewModels
                 Edges.Add(ev);
             }
             BuildLevelLines(data);
+            // P3: 建立系統過濾並套用可見性
+            BuildSystemFiltersFrom(data);
+            ApplySystemVisibility();
         }
 
         private void BuildFromData(SchematicData data)
@@ -880,6 +891,8 @@ namespace IFC_Viewer_00.ViewModels
         public Brush NodeBrush { get => _nodeBrush; set { if (_nodeBrush != value) { _nodeBrush = value; OnPropertyChanged(nameof(NodeBrush)); } } }
         private bool _isSelected;
         public bool IsSelected { get => _isSelected; set { if (_isSelected != value) { _isSelected = value; OnPropertyChanged(nameof(IsSelected)); } } }
+    private bool _visible = true;
+    public bool Visible { get => _visible; set { if (_visible != value) { _visible = value; OnPropertyChanged(nameof(Visible)); } } }
 
         // Phase 2: 類別標誌，供圖層切換判斷
         public bool IsTerminal
@@ -911,6 +924,8 @@ namespace IFC_Viewer_00.ViewModels
         public double Thickness { get => _thickness; set { if (Math.Abs(_thickness - value) > double.Epsilon) { _thickness = value; OnPropertyChanged(nameof(Thickness)); } } }
         private bool _isSelected;
         public bool IsSelected { get => _isSelected; set { if (_isSelected != value) { _isSelected = value; OnPropertyChanged(nameof(IsSelected)); } } }
+    private bool _visible = true;
+    public bool Visible { get => _visible; set { if (_visible != value) { _visible = value; OnPropertyChanged(nameof(Visible)); } } }
 
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
@@ -1232,6 +1247,75 @@ namespace IFC_Viewer_00.ViewModels
         {
             ApplyForceDirectedLayout(Nodes.ToList(), Edges.ToList(), iterations);
             if (refit) FitToCanvas(Nodes, CanvasWidth, CanvasHeight, CanvasPadding);
+        }
+
+        // ===== P3: 系統過濾 =====
+        public class SystemFilterOption : INotifyPropertyChanged
+        {
+            private bool _isChecked = true;
+            public string Name { get; set; } = string.Empty;
+            public bool IsChecked
+            {
+                get => _isChecked;
+                set { if (_isChecked != value) { _isChecked = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsChecked))); } }
+            }
+            public event PropertyChangedEventHandler? PropertyChanged;
+        }
+
+        private const string UnassignedSystem = "(未指定)";
+
+        private void BuildSystemFiltersFrom(SchematicData data)
+        {
+            try
+            {
+                Systems.Clear();
+                var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var n in data.Nodes)
+                {
+                    var s = string.IsNullOrWhiteSpace(n.SystemName) ? UnassignedSystem : n.SystemName!;
+                    names.Add(s);
+                }
+                foreach (var e in data.Edges)
+                {
+                    var s = string.IsNullOrWhiteSpace(e.SystemName) ? UnassignedSystem : e.SystemName!;
+                    names.Add(s);
+                }
+                foreach (var nm in names.OrderBy(x => x))
+                {
+                    var opt = new SystemFilterOption { Name = nm, IsChecked = true };
+                    opt.PropertyChanged += (_, __) => ApplySystemVisibility();
+                    Systems.Add(opt);
+                }
+            }
+            catch { }
+        }
+
+        private void ApplySystemVisibility()
+        {
+            try
+            {
+                if (Systems.Count == 0)
+                {
+                    foreach (var nv in Nodes) nv.Visible = true;
+                    foreach (var ev in Edges) ev.Visible = true;
+                    return;
+                }
+                var allowed = Systems.Where(s => s.IsChecked).Select(s => s.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                foreach (var nv in Nodes)
+                {
+                    var sys = nv.Node?.SystemName;
+                    var key = string.IsNullOrWhiteSpace(sys) ? UnassignedSystem : sys!;
+                    nv.Visible = allowed.Contains(key);
+                }
+                foreach (var ev in Edges)
+                {
+                    var sys = ev.Edge?.SystemName;
+                    var key = string.IsNullOrWhiteSpace(sys) ? UnassignedSystem : sys!;
+                    // 邊要同時考量兩端節點是否可見
+                    ev.Visible = allowed.Contains(key) && (ev.Start?.Visible != false) && (ev.End?.Visible != false);
+                }
+            }
+            catch { }
         }
     }
 }

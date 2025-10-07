@@ -16,5 +16,26 @@ namespace IFC_Viewer_00.Models
         public IXbimEntity Connection { get; set; } = default!;
         // 由幾何鄰近性推斷出的邊（非 IfcRelConnectsPorts）
         public bool IsInferred { get; set; } = false;
+
+        // --- Sprint 1: 資料擴充 ---
+        // 系統/樓層分類（若不可得則為 null）
+        public string? SystemName { get; set; }
+        public string? LevelName { get; set; }
+
+        // 走向（水平/垂直/傾斜）
+        public PipeOrientation Orientation { get; set; } = PipeOrientation.Sloped;
+
+        // 主路管標記
+        public bool IsMainPipe { get; set; } = false;
+
+        // 管徑資訊（mm），可為 null（來源不足時）
+        public double? NominalDiameterMm { get; set; }
+        public double? OuterDiameterMm { get; set; }
+        public string? ValueSourceNominalDiameter { get; set; }
+        public string? ValueSourceOuterDiameter { get; set; }
+
+        // 系統縮寫與類型（例如 CWS / CHW 等；Type 可來自 IfcDistributionSystemEnum 或名稱推導）
+        public string? SystemAbbreviation { get; set; }
+        public string? SystemType { get; set; }
     }
 }

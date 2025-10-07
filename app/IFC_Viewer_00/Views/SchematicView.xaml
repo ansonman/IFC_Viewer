@@ -40,6 +40,20 @@
             </StackPanel>
 
             <Separator Margin="8,0"/>
+            <!-- P3: 系統過濾器 -->
+            <ItemsControl ItemsSource="{Binding Systems}" Margin="4,0">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <StackPanel Orientation="Horizontal"/>
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <CheckBox Content="{Binding Name}" IsChecked="{Binding IsChecked}" Margin="4,0"/>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
             <!-- Legend + Color settings (Phase 0) -->
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                 <StackPanel Orientation="Horizontal" Margin="8,0" VerticalAlignment="Center">
@@ -152,6 +166,9 @@
                                         <Setter Property="Stroke" Value="{Binding EdgeBrush}"/>
                                         <Setter Property="StrokeThickness" Value="{Binding Thickness}"/>
                                         <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Visible}" Value="False">
+                                                <Setter Property="UIElement.Visibility" Value="Collapsed"/>
+                                            </DataTrigger>
                                             <DataTrigger Binding="{Binding IsSelected}" Value="True">
                                                 <Setter Property="Stroke" Value="OrangeRed"/>
                                                 <Setter Property="StrokeThickness" Value="3"/>
@@ -180,6 +197,9 @@
                             <Setter Property="Canvas.Top" Value="{Binding TopLeftY}"/>
                             <!-- Phase 2: 節點的可見性（ShowTerminals/ShowPipes） -->
                             <Style.Triggers>
+                                <DataTrigger Binding="{Binding Visible}" Value="False">
+                                    <Setter Property="UIElement.Visibility" Value="Collapsed"/>
+                                </DataTrigger>
                                 <MultiDataTrigger>
                                     <MultiDataTrigger.Conditions>
                                         <Condition Binding="{Binding DataContext.ShowTerminals, RelativeSource={RelativeSource AncestorType=Window}}" Value="False"/>

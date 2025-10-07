@@ -20,6 +20,227 @@ namespace IFC_Viewer_00.Services
         // 新增：對外公開可選平面枚舉（供 V1 流程使用）
         public enum UserProjectionPlane { XY, XZ, YZ }
         
+        // === Sprint 1 輔助：單位、樓層、系統、管段方向/長度、管徑 ===
+        private static double GetLengthToMillimetreScale(IModel model)
+        {
+            try
+            {
+                var proj = model.Instances.OfType<IIfcProject>()?.FirstOrDefault();
+                var units = proj?.UnitsInContext?.Units;
+                if (units != null)
+                {
+                    // 直接找 SI 長度單位
+                    foreach (var u in units)
+                    {
+                        if (u is IIfcSIUnit si && si.UnitType == IfcUnitEnum.LENGTHUNIT)
+                        {
+                            var name = si.Name;
+                            if (name == IfcSIUnitName.METRE) return 1000.0; // m -> mm
+                            // 罕見：MILLIMETRE
+                            if (name.ToString().Equals("MILLIMETRE", StringComparison.OrdinalIgnoreCase)) return 1.0;
+                        }
+                        // 常見 conversion-based: FOOT/INCH
+                        if (u is IIfcConversionBasedUnit conv && conv.UnitType == IfcUnitEnum.LENGTHUNIT)
+                        {
+                            var uname = (IfcStringHelper.FromValue(conv.Name) ?? string.Empty).ToUpperInvariant();
+                            if (uname == "FOOT" || uname == "FEET") return 304.8; // 1 ft = 304.8 mm
+                            if (uname == "INCH") return 25.4; // 1 in = 25.4 mm
+                        }
+                    }
+                }
+            }
+            catch { }
+            // 預設：當作 mm
+            return 1.0;
+        }
+
+        private static string? GetLevelNameForProduct(IModel model, IIfcProduct prod)
+        {
+            try
+            {
+                // 直接掃描 ContainedInSpatialStructure（保守但穩定）
+                var rels = model.Instances.OfType<IIfcRelContainedInSpatialStructure>()?.ToList() ?? new List<IIfcRelContainedInSpatialStructure>();
+                foreach (var r in rels)
+                {
+                    if (r.RelatedElements == null) continue;
+                    foreach (var e in r.RelatedElements)
+                    {
+                        if (!ReferenceEquals(e, prod)) continue;
+                        var storey = r.RelatingStructure as IIfcBuildingStorey;
+                        if (storey != null)
+                        {
+                            try { return IfcStringHelper.FromValue((storey as IIfcRoot)?.Name) ?? IfcStringHelper.FromValue((storey as IIfcRoot)?.GlobalId) ?? null; } catch { return null; }
+                        }
+                        // 若非樓層，沿父層往上找樓層
+                        var spatial = r.RelatingStructure as IIfcSpatialStructureElement;
+                        while (spatial != null)
+                        {
+                            if (spatial is IIfcBuildingStorey st)
+                            {
+                                try { return IfcStringHelper.FromValue((st as IIfcRoot)?.Name) ?? IfcStringHelper.FromValue((st as IIfcRoot)?.GlobalId) ?? null; } catch { return null; }
+                            }
+                            try { spatial = (spatial as dynamic).Decomposes?.FirstOrDefault()?.RelatingObject as IIfcSpatialStructureElement; } catch { spatial = null; }
+                        }
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private static (string sysName, string? sysAbbrev, string? sysType) GetSystemMetadata(IIfcSystem sys)
+        {
+            string name = TrySystemName(sys);
+            string? type = null;
+            try
+            {
+                if (sys is IIfcDistributionSystem ds)
+                {
+                    var pt = ds.PredefinedType; // IfcDistributionSystemEnum?
+                    type = pt?.ToString();
+                }
+            }
+            catch { }
+            string? abbr = DeriveSystemAbbreviation(name, type);
+            return (name, abbr, type);
+        }
+
+        private static string? DeriveSystemAbbreviation(string? name, string? sysType)
+        {
+            if (string.IsNullOrWhiteSpace(name) && string.IsNullOrWhiteSpace(sysType)) return null;
+            var s = (name ?? sysType ?? string.Empty).Trim();
+            // 1) 取連續大寫字母
+            var upper = new string(s.Where(char.IsUpper).ToArray());
+            if (upper.Length >= 2 && upper.Length <= 6) return upper;
+            // 2) 取每個詞的首字母（英數）
+            var parts = s.Split(new[] { ' ', '-', '_', '/', '\\', '(', ')', '[', ']', '{', '}', '.' }, StringSplitOptions.RemoveEmptyEntries);
+            var initials = string.Concat(parts.Select(p => char.ToUpperInvariant(p[0])));
+            if (initials.Length >= 2 && initials.Length <= 6) return initials;
+            // 3) 前 3 字
+            return s.Length >= 3 ? s.Substring(0, 3).ToUpperInvariant() : s.ToUpperInvariant();
+        }
+
+        private static PipeOrientation ClassifyOrientationFromVector(Vector3D v)
+        {
+            if (v.LengthSquared < 1e-12) return PipeOrientation.Sloped;
+            var nv = v; nv.Normalize();
+            var zAbs = Math.Abs(nv.Z);
+            if (zAbs >= 0.9) return PipeOrientation.Vertical;
+            if (zAbs <= 0.1) return PipeOrientation.Horizontal;
+            return PipeOrientation.Sloped;
+        }
+
+        private static bool TryGetSegmentDirectionAndLength(IIfcPipeSegment seg, out Vector3D dir, out double length)
+        {
+            dir = new Vector3D(); length = 0;
+            try
+            {
+                var body = seg.Representation?.Representations?
+                    .FirstOrDefault(r => string.Equals(r.RepresentationType, "SweptSolid", StringComparison.OrdinalIgnoreCase));
+                var extrude = body?.Items?.OfType<IIfcExtrudedAreaSolid>()?.FirstOrDefault();
+                if (extrude != null)
+                {
+                    var productBasis = GetBasisFromPlacement(seg.ObjectPlacement as IIfcObjectPlacement);
+                    var pos = extrude.Position as IIfcAxis2Placement3D;
+                    var solidBasis = pos != null ? ApplyAxis2Placement(productBasis, pos) : productBasis;
+                    var dLocal = GetDirectionVector(extrude.ExtrudedDirection) ?? new Vector3D(0, 0, 1);
+                    var dWorld = dLocal.X * solidBasis.U + dLocal.Y * solidBasis.V + dLocal.Z * solidBasis.W;
+                    if (dWorld.LengthSquared < 1e-16) dWorld = solidBasis.W;
+                    dir = dWorld; length = extrude.Depth;
+                    return true;
+                }
+            }
+            catch { }
+            // 後援：使用兩端節點或 Port 的向量（可能不可得）
+            try
+            {
+                var ports = GetPorts(seg).OfType<IIfcPort>().Take(2).ToList();
+                if (ports.Count == 2)
+                {
+                    var a = GetPortPoint3D(ports[0]);
+                    var b = GetPortPoint3D(ports[1]);
+                    if (a.HasValue && b.HasValue)
+                    {
+                        dir = new Vector3D(b.Value.X - a.Value.X, b.Value.Y - a.Value.Y, b.Value.Z - a.Value.Z);
+                        length = dir.Length; return true;
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private static void ExtractDiameters(IModel model, IIfcPipeSegment seg, out double? nominalMm, out double? outerMm, out string? srcNom, out string? srcOuter)
+        {
+            nominalMm = null; outerMm = null; srcNom = null; srcOuter = null;
+            double scale = GetLengthToMillimetreScale(model);
+            try
+            {
+                // 幾何 Profile：IfcCircleProfileDef/IfcRectangleProfileDef 等
+                var body = seg.Representation?.Representations?
+                    .FirstOrDefault(r => string.Equals(r.RepresentationType, "SweptSolid", StringComparison.OrdinalIgnoreCase));
+                var extrude = body?.Items?.OfType<IIfcExtrudedAreaSolid>()?.FirstOrDefault();
+                var area = extrude?.SweptArea;
+                if (area is IIfcCircleProfileDef circle)
+                {
+                    var rVal = TryConvertIfcValueToDouble(circle.Radius);
+                    if (rVal.HasValue)
+                    {
+                        var r = rVal.Value * scale; // 以 mm 換算
+                        outerMm = 2.0 * r; srcOuter = "Profile.Circle.Radius";
+                    }
+                }
+                else if (area is IIfcArbitraryClosedProfileDef arb)
+                {
+                    // 無明確半徑；略過
+                }
+            }
+            catch { }
+
+            // 屬性集 Pset_PipeSegmentOccurrence.NominalDiameter
+            try
+            {
+                foreach (var defBy in seg.IsDefinedBy ?? Enumerable.Empty<IIfcRelDefinesByProperties>())
+                {
+                    var pset = defBy.RelatingPropertyDefinition as IIfcPropertySet;
+                    if (pset == null) continue;
+                    foreach (var p in pset.HasProperties ?? Enumerable.Empty<IIfcProperty>())
+                    {
+                        var name = (IfcStringHelper.FromValue(p?.Name) ?? string.Empty).Trim();
+                        if (string.Equals(name, "NominalDiameter", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(name, "Nominal Diameter", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(name, "DN", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (p is IIfcPropertySingleValue sv)
+                            {
+                                var v = sv.NominalValue;
+                                double? val = TryConvertIfcValueToDouble(v);
+                                if (val.HasValue)
+                                {
+                                    nominalMm = val.Value * GetLengthToMillimetreScale(model);
+                                    srcNom = $"Pset.{pset.Name}." + name;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private static double? TryConvertIfcValueToDouble(object? ifcValue)
+        {
+            try
+            {
+                if (ifcValue == null) return null;
+                // xBIM 將 IfcValue 拓展為具體型別（如 IfcLengthMeasure/IfcPositiveLengthMeasure）
+                // 嘗試以 dynamic 讀取 .Value；失敗則用 ToString 解析
+                try { return (double)(ifcValue as dynamic).Value; } catch { }
+                if (double.TryParse(ifcValue.ToString(), out var d)) return d; 
+            }
+            catch { }
+            return null;
+        }
 
         // 取得樓層 Elevation（同一型別 IModel，亦兼容 IStepModel 別名）
         private static void PopulateLevels(IModel ifcModel, SchematicData data)
@@ -439,6 +660,7 @@ namespace IFC_Viewer_00.Services
                         if (sys is IPersistEntity peSys) data.SystemEntity = peSys;
                     }
                     catch { }
+                    var (metaName, metaAbbr, metaType) = GetSystemMetadata(sys);
                     var nodeMap = new Dictionary<IPersistEntity, SchematicNode>();
                     var memberSet = new HashSet<IPersistEntity>();
 
@@ -487,6 +709,8 @@ namespace IFC_Viewer_00.Services
                         if (pe is IIfcPipeFitting pf)
                         {
                             var node = CreateNodeFromElement(pf);
+                            node.SystemName = metaName; node.SystemAbbreviation = metaAbbr; node.SystemType = metaType;
+                            node.LevelName = GetLevelNameForProduct(ifcModel, pf);
                             data.Nodes.Add(node);
                             nodeMap[pe] = node;
                             foreach (var p in GetPorts(pf)) portToNode[p] = node;
@@ -494,6 +718,8 @@ namespace IFC_Viewer_00.Services
                         else if (pe is IIfcFlowTerminal term)
                         {
                             var node = CreateNodeFromElement(term);
+                            node.SystemName = metaName; node.SystemAbbreviation = metaAbbr; node.SystemType = metaType;
+                            node.LevelName = GetLevelNameForProduct(ifcModel, term);
                             data.Nodes.Add(node);
                             nodeMap[pe] = node;
                             foreach (var p in GetPorts(term)) portToNode[p] = node;
@@ -501,6 +727,8 @@ namespace IFC_Viewer_00.Services
                         else if (pe is IIfcValve valve)
                         {
                             var node = CreateNodeFromElement(valve);
+                            node.SystemName = metaName; node.SystemAbbreviation = metaAbbr; node.SystemType = metaType;
+                            node.LevelName = GetLevelNameForProduct(ifcModel, valve);
                             data.Nodes.Add(node);
                             nodeMap[pe] = node;
                             foreach (var p in GetPorts(valve)) portToNode[p] = node;
@@ -512,6 +740,8 @@ namespace IFC_Viewer_00.Services
                     var allPortRels = ifcModel.Instances.OfType<IIfcRelConnectsPorts>()?.ToList() ?? new List<IIfcRelConnectsPorts>();
 
                     // 第二遍：將 IfcPipeSegment 轉換為邊（Edges）
+                    var mainPipeCandidates = new List<SchematicEdge>();
+                    double unitScaleMm = GetLengthToMillimetreScale(ifcModel);
                     foreach (var pe in memberSet)
                     {
                         if (pe is not IIfcPipeSegment seg) continue;
@@ -559,8 +789,41 @@ namespace IFC_Viewer_00.Services
                                     Entity = seg as IPersistEntity ?? start.Entity,
                                     // Connection 欄位目前不特別使用，沿用同一實體以避免 null
                                     Connection = seg as IPersistEntity ?? start.Entity,
-                                    IsInferred = false
+                                    IsInferred = false,
+                                    SystemName = metaName,
+                                    SystemAbbreviation = metaAbbr,
+                                    SystemType = metaType
                                 };
+                                // Level：以管段為主；若無則回退起點/終點
+                                edge.LevelName = GetLevelNameForProduct(ifcModel, seg) ?? start.LevelName ?? end.LevelName;
+
+                                // Orientation：優先幾何，次選起迄
+                                if (TryGetSegmentDirectionAndLength(seg, out var d, out var lenModel))
+                                {
+                                    edge.Orientation = ClassifyOrientationFromVector(d);
+                                    // 記下長度（用於主幹評分）；以 mm
+                                    double lengthMm = lenModel * unitScaleMm;
+                                    // Diameters
+                                    ExtractDiameters(ifcModel, seg, out var dnMm, out var doMm, out var srcDn, out var srcDo);
+                                    edge.NominalDiameterMm = dnMm; edge.OuterDiameterMm = doMm;
+                                    edge.ValueSourceNominalDiameter = srcDn; edge.ValueSourceOuterDiameter = srcDo;
+                                    // 先暫存於候選清單，後續以分數挑選主幹
+                                    mainPipeCandidates.Add(edge);
+                                    // 用 Tag 暫存分數（避免改模型）：以 Outer 或 Nominal 作半徑參與
+                                    double dia = doMm ?? dnMm ?? 0;
+                                    double score = (dia > 0 ? dia : 1.0) * Math.Max(1.0, lengthMm);
+                                    // 將暫存分數以 Connection 為 key 放入字典不可行；改用內部列表並二次排序
+                                    // 在此無需保存得分欄位；後續排序直接重算
+                                }
+                                else
+                                {
+                                    // 後援：用節點座標向量
+                                    var vec = new Vector3D(
+                                        end.Position3D.X - start.Position3D.X,
+                                        end.Position3D.Y - start.Position3D.Y,
+                                        end.Position3D.Z - start.Position3D.Z);
+                                    edge.Orientation = ClassifyOrientationFromVector(vec);
+                                }
                                 data.Edges.Add(edge);
                                 start.Edges.Add(edge);
                                 end.Edges.Add(edge);
@@ -598,7 +861,29 @@ namespace IFC_Viewer_00.Services
                     }
                     catch { }
 
-                    // f) 收集完成後加入結果
+                    // f) 主幹標記（以系統內邊的直徑*長度打分，取前 15%）
+                    try
+                    {
+                        if (data.Edges.Count > 0)
+                        {
+                            var ranked = data.Edges
+                                .Select(e => new
+                                {
+                                    E = e,
+                                    Dia = e.OuterDiameterMm ?? e.NominalDiameterMm ?? 0,
+                                    Len = (e.StartNode != null && e.EndNode != null)
+                                        ? Math.Sqrt(Dist2(e.StartNode.Position3D, e.EndNode.Position3D)) * unitScaleMm
+                                        : 0
+                                })
+                                .OrderByDescending(x => (x.Dia > 0 ? x.Dia : 1.0) * Math.Max(1.0, x.Len))
+                                .ToList();
+                            int pick = Math.Max(1, (int)Math.Ceiling(ranked.Count * 0.15));
+                            foreach (var x in ranked.Take(pick)) x.E.IsMainPipe = true;
+                        }
+                    }
+                    catch { }
+
+                    // g) 收集完成後加入結果
                     try { PopulateLevels(ifcModel, data); } catch { }
                     results.Add(data);
                 }
@@ -1461,6 +1746,7 @@ namespace IFC_Viewer_00.Services
                 var data = new SchematicData();
                 var planeNorm = (plane ?? "XY").Trim().ToUpperInvariant();
                 if (planeNorm != "XY" && planeNorm != "XZ" && planeNorm != "YZ") planeNorm = "XY";
+                double unitScaleMm = GetLengthToMillimetreScale(ifcModel);
 
                 var segments = ifcModel.Instances.OfType<IIfcPipeSegment>()?.ToList() ?? new List<IIfcPipeSegment>();
                 int segCount = 0, segSkipped = 0;
@@ -1546,6 +1832,12 @@ namespace IFC_Viewer_00.Services
                             Connection = (seg as IPersistEntity)!,
                             IsInferred = false
                         };
+                        // Sprint 1：方向/管徑/樓層
+                        edge.Orientation = ClassifyOrientationFromVector(dWorld);
+                        ExtractDiameters(ifcModel, seg, out var dn, out var dOuter, out var srcDn, out var srcDo);
+                        edge.NominalDiameterMm = dn; edge.OuterDiameterMm = dOuter;
+                        edge.ValueSourceNominalDiameter = srcDn; edge.ValueSourceOuterDiameter = srcDo;
+                        edge.LevelName = GetLevelNameForProduct(ifcModel, seg);
                         data.Edges.Add(edge);
                         startNode.Edges.Add(edge); endNode.Edges.Add(edge);
                         segCount++;
@@ -1608,6 +1900,10 @@ namespace IFC_Viewer_00.Services
                     {
                         var pe = ifcModel.Instances[lbl] as IPersistEntity;
                         if (pe != null) n.Entity = pe;
+                        if (pe is IIfcProduct prod)
+                        {
+                            n.LevelName = GetLevelNameForProduct(ifcModel, prod);
+                        }
                     }
                 }
                 catch { }

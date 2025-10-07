@@ -26,5 +26,13 @@ namespace IFC_Viewer_00.Models
         public int? PortLabel { get; set; }
         // 新增：宿主元素 EntityLabel
         public int? HostLabel { get; set; }
+
+        // --- Sprint 1: 資料擴充 ---
+        // 系統/樓層分類（若不可得則為 null）
+        public string? SystemName { get; set; }
+        public string? LevelName { get; set; }
+        // 系統縮寫與類型（可用於 UI 圖例與篩選）
+        public string? SystemAbbreviation { get; set; }
+        public string? SystemType { get; set; }
     }
 }
