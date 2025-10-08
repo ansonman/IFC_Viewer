@@ -7,6 +7,10 @@
     SnapsToDevicePixels="True">
     <Window.Resources>
         <conv:InverseScaleConverter x:Key="InverseScale"/>
+        <conv:HideLabelForShortEdgeConverter x:Key="HideShortLabel"/>
+    <conv:CenterOnPointConverter x:Key="CenterOnPoint"/>
+    <conv:HalfNegativeConverter x:Key="HalfNeg"/>
+    <conv:CenterOffsetWithScaleConverter x:Key="CenterOffsetWithScale"/>
     </Window.Resources>
     <Grid>
         <Grid.RowDefinitions>
@@ -42,10 +46,20 @@
                 <CheckBox Content="管線" Margin="4,0" IsChecked="{Binding ShowPipes}"/>
                 <CheckBox Content="標籤" Margin="4,0" IsChecked="{Binding ShowLabels}"/>
                 <CheckBox Content="管徑" Margin="4,0" IsChecked="{Binding ShowPipeSizeTags}"/>
+                <CheckBox Content="短邊隱藏管徑" Margin="4,0" IsChecked="{Binding AutoHideShortPipeSizeLabels}"/>
+                <TextBlock Text="閾值(px):" Margin="8,0,4,0" VerticalAlignment="Center"/>
+                <TextBox Width="58" Height="22" VerticalAlignment="Center"
+                         Text="{Binding ShortPipeLabelMinLengthPx, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="短於此像素長度的邊將自動隱藏管徑標籤"/>
+                <TextBlock Text="標籤倍率:" Margin="8,0,4,0" VerticalAlignment="Center"/>
+                <TextBox Width="58" Height="22" VerticalAlignment="Center"
+                         Text="{Binding TagScale, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="管徑標籤縮放倍率（0.1~5.0）"/>
             </StackPanel>
 
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="8,0,0,0">
                 <CheckBox Content="顯示縮放錨點" Margin="4,0" IsChecked="{Binding ShowZoomAnchor}"/>
+                <CheckBox Content="點" Margin="12,0,0,0" IsChecked="{Binding ShowAllNodes}" ToolTip="顯示/隱藏所有節點"/>
             </StackPanel>
 
             <Separator Margin="8,0"/>
@@ -102,16 +116,16 @@
                             </Style.Triggers>
                         </Style>
                     </ItemsControl.ItemContainerStyle>
-                                        <ItemsControl.ItemTemplate>
+                    <ItemsControl.ItemTemplate>
                         <DataTemplate>
                             <Grid>
-                                    <Line X1="{Binding X1}" X2="{Binding X2}" Y1="{Binding Y}" Y2="{Binding Y}"
+                                <Line X1="{Binding X1}" X2="{Binding X2}" Y1="{Binding Y}" Y2="{Binding Y}"
                                       Stroke="#808080" StrokeDashArray="4,4" StrokeThickness="1" SnapsToDevicePixels="True"/>
-                                    <TextBlock Text="{Binding Name}" FontSize="10" Foreground="#606060"
+                                <TextBlock Text="{Binding Name}" FontSize="10" Foreground="#606060"
                                            Canvas.Left="{Binding LabelX}" Canvas.Top="{Binding LabelY}"/>
                             </Grid>
                         </DataTemplate>
-                                        </ItemsControl.ItemTemplate>
+                    </ItemsControl.ItemTemplate>
                 </ItemsControl>
                 <!-- 無 Ports 提示 Banner -->
                 <Border Background="#FFFDEDD0" BorderBrush="#FFE6B422" BorderThickness="1" CornerRadius="4" Padding="8" Visibility="Collapsed">
@@ -191,6 +205,7 @@
                     </ItemsControl.ItemsPanel>
                     <ItemsControl.ItemContainerStyle>
                         <Style TargetType="ContentPresenter">
+                            <!-- 容器直接放在 MidX/MidY，元素內部再以 TranslateTransform 置中 -->
                             <Setter Property="Canvas.Left" Value="{Binding MidX}"/>
                             <Setter Property="Canvas.Top" Value="{Binding MidY}"/>
                             <Style.Triggers>
@@ -203,24 +218,39 @@
                                 <DataTrigger Binding="{Binding Visible}" Value="False">
                                     <Setter Property="UIElement.Visibility" Value="Collapsed"/>
                                 </DataTrigger>
+                                <!-- 新增：短邊自動隱藏判斷（AutoHide && EdgeLength < Threshold） -->
+                                <DataTrigger Value="Collapsed">
+                                    <DataTrigger.Binding>
+                                        <MultiBinding Converter="{StaticResource HideShortLabel}">
+                                            <Binding Path="DataContext.AutoHideShortPipeSizeLabels" RelativeSource="{RelativeSource AncestorType=Window}"/>
+                                            <Binding Path="EdgeLength"/>
+                                            <Binding Path="DataContext.ShortPipeLabelMinLengthPx" RelativeSource="{RelativeSource AncestorType=Window}"/>
+                                        </MultiBinding>
+                                    </DataTrigger.Binding>
+                                    <Setter Property="UIElement.Visibility" Value="Collapsed"/>
+                                </DataTrigger>
                             </Style.Triggers>
                         </Style>
                     </ItemsControl.ItemContainerStyle>
                     <ItemsControl.ItemTemplate>
                         <DataTemplate>
-                            <Border Background="#CCFFFFFF" BorderBrush="#808080" BorderThickness="0.5" CornerRadius="2" Padding="2,0" SnapsToDevicePixels="True"
-                                    RenderTransformOrigin="0.5,0.5">
-                                <Border.RenderTransform>
+                            <Grid RenderTransformOrigin="0.5,0.5">
+                                <Grid.RenderTransform>
                                     <TransformGroup>
-                                        <!-- 先沿邊線方向旋轉（以 ContentPresenter 的 MidX/MidY 當中心） -->
+                                        <!-- 先以未縮放尺寸平移到中心（之後縮放及旋轉均以中心為基準） -->
+                                        <TranslateTransform X="{Binding ElementName=TagBox, Path=ActualWidth, Converter={StaticResource HalfNeg}}"
+                                                            Y="{Binding ElementName=TagBox, Path=ActualHeight, Converter={StaticResource HalfNeg}}"/>
+                                        <!-- 以中心旋轉對齊邊方向 -->
                                         <RotateTransform Angle="{Binding AngleDeg}"/>
-                                        <!-- 反向縮放，讓字級與框不跟 Canvas 縮放而變大/變小 -->
-                                        <ScaleTransform ScaleX="{Binding ElementName=ZoomTransform, Path=ScaleX, Converter={StaticResource InverseScale}}"
-                                                        ScaleY="{Binding ElementName=ZoomTransform, Path=ScaleY, Converter={StaticResource InverseScale}}"/>
+                                        <!-- 手動倍率縮放（使用者控制） -->
+                                        <ScaleTransform ScaleX="{Binding DataContext.TagScale, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                        ScaleY="{Binding DataContext.TagScale, RelativeSource={RelativeSource AncestorType=Window}}"/>
                                     </TransformGroup>
-                                </Border.RenderTransform>
-                                <TextBlock Text="{Binding SizeLabel}" FontSize="10" Foreground="#404040"/>
-                            </Border>
+                                </Grid.RenderTransform>
+                                <Border x:Name="TagBox" Background="#CCFFFFFF" BorderBrush="#808080" BorderThickness="0.5" CornerRadius="2" Padding="2,0" SnapsToDevicePixels="True">
+                                    <TextBlock Text="{Binding SizeLabel}" FontSize="10" Foreground="#404040"/>
+                                </Border>
+                            </Grid>
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>
@@ -239,6 +269,9 @@
                             <!-- Phase 2: 節點的可見性（ShowTerminals/ShowPipes） -->
                             <Style.Triggers>
                                 <DataTrigger Binding="{Binding Visible}" Value="False">
+                                    <Setter Property="UIElement.Visibility" Value="Collapsed"/>
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding DataContext.ShowAllNodes, RelativeSource={RelativeSource AncestorType=Window}}" Value="False">
                                     <Setter Property="UIElement.Visibility" Value="Collapsed"/>
                                 </DataTrigger>
                                 <MultiDataTrigger>

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Media.Media3D;
 using IFC_Viewer_00.Models;
@@ -197,9 +198,37 @@ namespace IFC_Viewer_00.Services
             }
             catch { }
 
-            // 屬性集 Pset_PipeSegmentOccurrence.NominalDiameter
+            // 屬性集：擴充對常見鍵的支援（NominalDiameter/DN、Diameter、Outside/Outer Diameter、Inside Diameter 等）
             try
             {
+                static double? ParseNumberWithUnits(object? v, double mmScale)
+                {
+                    if (v == null) return null;
+                    try
+                    {
+                        // 優先讀 IfcMeasure.Value
+                        try { return (double)(v as dynamic).Value * mmScale; } catch { }
+                        var s = v.ToString() ?? string.Empty;
+                        if (string.IsNullOrWhiteSpace(s)) return null;
+                        var sNorm = s.Trim();
+                        // 偵測英吋
+                        bool isInch = sNorm.Contains("\"") || Regex.IsMatch(sNorm, "(?i)(inch|inches|in)\b");
+                        // 取第一個數字（允許小數）
+                        var m = Regex.Match(sNorm, @"[-+]?[0-9]*\.?[0-9]+");
+                        if (!m.Success) return null;
+                        if (!double.TryParse(m.Value, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var num))
+                        {
+                            if (!double.TryParse(m.Value, out num)) return null;
+                        }
+                        if (isInch) return num * 25.4; // inch → mm
+                        // 偵測是否已有 mm 單位（或未標註，視為模型長度單位刻度）
+                        // 若字串包含 mm 就不再乘以 scale（通常 IfcValue 已有實體單位，字串才會帶單位）
+                        if (Regex.IsMatch(sNorm, "(?i)\bmm\b")) return num; // 已是 mm
+                        return num * mmScale;
+                    }
+                    catch { return null; }
+                }
+
                 foreach (var defBy in seg.IsDefinedBy ?? Enumerable.Empty<IIfcRelDefinesByProperties>())
                 {
                     var pset = defBy.RelatingPropertyDefinition as IIfcPropertySet;
@@ -207,17 +236,59 @@ namespace IFC_Viewer_00.Services
                     foreach (var p in pset.HasProperties ?? Enumerable.Empty<IIfcProperty>())
                     {
                         var name = (IfcStringHelper.FromValue(p?.Name) ?? string.Empty).Trim();
-                        if (string.Equals(name, "NominalDiameter", StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(name, "Nominal Diameter", StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(name, "DN", StringComparison.OrdinalIgnoreCase))
+                        if (p is not IIfcPropertySingleValue sv) continue;
+                        var val = sv.NominalValue;
+
+                        // Nominal / DN / NPS / Diameter → nominalMm
+                        if (nominalMm == null)
                         {
-                            if (p is IIfcPropertySingleValue sv)
+                            if (string.Equals(name, "NominalDiameter", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(name, "Nominal Diameter", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(name, "DN", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(name, "Diameter", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(name, "Nominal Pipe Size", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(name, "NPS", StringComparison.OrdinalIgnoreCase))
                             {
-                                var v = sv.NominalValue;
-                                double? val = TryConvertIfcValueToDouble(v);
-                                if (val.HasValue)
+                                var num = TryConvertIfcValueToDouble(val) ?? ParseNumberWithUnits(val, scale);
+                                if (num.HasValue && num.Value > 0)
                                 {
-                                    nominalMm = val.Value * GetLengthToMillimetreScale(model);
+                                    nominalMm = num.Value;
+                                    srcNom = $"Pset.{pset.Name}." + name;
+                                }
+                            }
+                        }
+
+                        // Outer / Outside Diameter → outerMm
+                        if (outerMm == null)
+                        {
+                            if (string.Equals(name, "OutsideDiameter", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(name, "Outside Diameter", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(name, "OuterDiameter", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(name, "Outer Diameter", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(name, "OD", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(name, "Outside Dia", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(name, "Outside Dia.", StringComparison.OrdinalIgnoreCase))
+                            {
+                                var num = TryConvertIfcValueToDouble(val) ?? ParseNumberWithUnits(val, scale);
+                                if (num.HasValue && num.Value > 0)
+                                {
+                                    outerMm = num.Value;
+                                    srcOuter = $"Pset.{pset.Name}." + name;
+                                }
+                            }
+                        }
+
+                        // Inside Diameter（不直接用於標籤，但可作為 nominal 的候補）
+                        if (nominalMm == null)
+                        {
+                            if (string.Equals(name, "InsideDiameter", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(name, "Inside Diameter", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(name, "ID", StringComparison.OrdinalIgnoreCase))
+                            {
+                                var num = TryConvertIfcValueToDouble(val) ?? ParseNumberWithUnits(val, scale);
+                                if (num.HasValue && num.Value > 0)
+                                {
+                                    nominalMm = num.Value;
                                     srcNom = $"Pset.{pset.Name}." + name;
                                 }
                             }

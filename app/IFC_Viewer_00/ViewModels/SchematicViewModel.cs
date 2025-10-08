@@ -72,6 +72,55 @@ namespace IFC_Viewer_00.ViewModels
     private bool _showPipeSizeTags = true;
     public bool ShowPipeSizeTags { get => _showPipeSizeTags; set { if (_showPipeSizeTags != value) { _showPipeSizeTags = value; OnPropertyChanged(nameof(ShowPipeSizeTags)); } } }
 
+    // 手動控制：管徑標籤縮放倍率（不再自動依縮放調整）
+    private double _tagScale = 1.0; // 1.0 = 原始大小
+    public double TagScale
+    {
+        get => _tagScale;
+        set
+        {
+            double v = double.IsNaN(value) || double.IsInfinity(value) ? _tagScale : Math.Clamp(value, 0.1, 5.0);
+            if (Math.Abs(_tagScale - v) > double.Epsilon)
+            {
+                _tagScale = v; OnPropertyChanged(nameof(TagScale));
+            }
+        }
+    }
+
+    // 新增：短邊自動隱藏管徑標籤設定與閾值（像素）
+    private bool _autoHideShortPipeSizeLabels = false;
+    public bool AutoHideShortPipeSizeLabels
+    {
+        get => _autoHideShortPipeSizeLabels;
+        set
+        {
+            if (_autoHideShortPipeSizeLabels != value)
+            {
+                _autoHideShortPipeSizeLabels = value;
+                OnPropertyChanged(nameof(AutoHideShortPipeSizeLabels));
+                // 變更即保存設定
+                SaveColorsToDisk();
+            }
+        }
+    }
+
+    private double _shortPipeLabelMinLengthPx = 40.0;
+    public double ShortPipeLabelMinLengthPx
+    {
+        get => _shortPipeLabelMinLengthPx;
+        set
+        {
+            double v = double.IsNaN(value) || double.IsInfinity(value) ? _shortPipeLabelMinLengthPx : Math.Clamp(value, 0.0, 500.0);
+            if (Math.Abs(_shortPipeLabelMinLengthPx - v) > double.Epsilon)
+            {
+                _shortPipeLabelMinLengthPx = v;
+                OnPropertyChanged(nameof(ShortPipeLabelMinLengthPx));
+                // 變更即保存設定
+                SaveColorsToDisk();
+            }
+        }
+    }
+
     // Phase 2: 圖層切換（預設全開）
     private bool _showTerminals = true;
     public bool ShowTerminals
@@ -90,6 +139,14 @@ namespace IFC_Viewer_00.ViewModels
     {
         get => _showLabels;
         set { if (_showLabels != value) { _showLabels = value; OnPropertyChanged(nameof(ShowLabels)); } }
+    }
+
+    // 顯示/隱藏所有點（Nodes）
+    private bool _showAllNodes = true;
+    public bool ShowAllNodes
+    {
+        get => _showAllNodes;
+        set { if (_showAllNodes != value) { _showAllNodes = value; OnPropertyChanged(nameof(ShowAllNodes)); } }
     }
 
     // 診斷用：是否顯示縮放錨點（預設關閉）
@@ -128,6 +185,9 @@ namespace IFC_Viewer_00.ViewModels
         public string? Terminal { get; set; }
         public string? PipeNode { get; set; }
         public string? PipeEdge { get; set; }
+        // 新增：短邊隱藏與閾值（使用可為空以相容舊檔）
+        public bool? AutoHideShortPipeSizeLabels { get; set; }
+        public double? ShortPipeLabelMinLengthPx { get; set; }
     }
 
         public SchematicViewModel(SchematicService service, ISelectionService? selection = null)
@@ -957,7 +1017,9 @@ namespace IFC_Viewer_00.ViewModels
                 {
                     Terminal = BrushToHex(TerminalBrush),
                     PipeNode = BrushToHex(PipeNodeBrush),
-                    PipeEdge = BrushToHex(PipeEdgeBrush)
+                    PipeEdge = BrushToHex(PipeEdgeBrush),
+                    AutoHideShortPipeSizeLabels = AutoHideShortPipeSizeLabels,
+                    ShortPipeLabelMinLengthPx = ShortPipeLabelMinLengthPx
                 };
                 var json = JsonSerializer.Serialize(obj, new JsonSerializerOptions { WriteIndented = true });
                 File.WriteAllText(ColorSettingsPath, json);
@@ -978,6 +1040,19 @@ namespace IFC_Viewer_00.ViewModels
                 var pe = HexToBrush(obj.PipeEdge, PipeEdgeBrush);
                 TerminalBrush = term; PipeNodeBrush = pn; PipeEdgeBrush = pe;
                 ApplyCurrentColorsToViews();
+                // 新增：讀取短邊隱藏設定與閾值（相容舊檔：缺少則沿用目前預設值）
+                if (obj.AutoHideShortPipeSizeLabels.HasValue)
+                {
+                    _autoHideShortPipeSizeLabels = obj.AutoHideShortPipeSizeLabels.Value;
+                    OnPropertyChanged(nameof(AutoHideShortPipeSizeLabels));
+                }
+                if (obj.ShortPipeLabelMinLengthPx.HasValue)
+                {
+                    // 使用公開 setter 的邏輯（含數值檢查與保存）避免重寫驗證邏輯
+                    // 但為避免在載入時立即覆寫檔案，這裡直接設欄位後觸發通知
+                    _shortPipeLabelMinLengthPx = Math.Clamp(obj.ShortPipeLabelMinLengthPx.Value, 0.0, 500.0);
+                    OnPropertyChanged(nameof(ShortPipeLabelMinLengthPx));
+                }
                 AddLog("[View] 已載入顏色設定");
             }
             catch { }
@@ -1085,6 +1160,7 @@ namespace IFC_Viewer_00.ViewModels
                     OnPropertyChanged(nameof(MidX));
                     OnPropertyChanged(nameof(MidY));
                     OnPropertyChanged(nameof(AngleDeg));
+                    OnPropertyChanged(nameof(EdgeLength));
                 }
             }
         }
@@ -1104,6 +1180,7 @@ namespace IFC_Viewer_00.ViewModels
                     OnPropertyChanged(nameof(MidX));
                     OnPropertyChanged(nameof(MidY));
                     OnPropertyChanged(nameof(AngleDeg));
+                    OnPropertyChanged(nameof(EdgeLength));
                 }
             }
         }
@@ -1135,6 +1212,21 @@ namespace IFC_Viewer_00.ViewModels
             }
         }
 
+        // 供隱藏短邊標籤判斷的像素長度
+        public double EdgeLength
+        {
+            get
+            {
+                double sx = Start?.X ?? 0.0;
+                double sy = Start?.Y ?? 0.0;
+                double ex = End?.X ?? 0.0;
+                double ey = End?.Y ?? 0.0;
+                double dx = ex - sx;
+                double dy = ey - sy;
+                return Math.Sqrt(dx * dx + dy * dy);
+            }
+        }
+
         private void OnEndpointChanged(object? sender, PropertyChangedEventArgs e)
         {
             if (e.PropertyName == nameof(SchematicNodeView.X) || e.PropertyName == nameof(SchematicNodeView.Y))
@@ -1142,6 +1234,7 @@ namespace IFC_Viewer_00.ViewModels
                 OnPropertyChanged(nameof(MidX));
                 OnPropertyChanged(nameof(MidY));
                 OnPropertyChanged(nameof(AngleDeg));
+                OnPropertyChanged(nameof(EdgeLength));
             }
         }
 
