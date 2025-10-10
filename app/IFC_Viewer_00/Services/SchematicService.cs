@@ -17,6 +17,780 @@ namespace IFC_Viewer_00.Services
 {
     public class SchematicService
     {
+        // 是否啟用：穿越配件連線（ThroughFitting / Rewire）
+        // 說明：在 Ports-only 的拓撲上，若某個 IfcPipeFitting 節點的度數=2，
+        // 會將其兩端相鄰節點以一條推導邊直接相連（視覺上將 elbow 視為一段連續 segment）。
+        // 預設為關閉以避免影響既有視覺。
+        public bool ThroughFittingRewireEnabled { get; set; } = false;
+        // === Projection coverage report (diagnostics for 2D canvas placement) ===
+        public record Element2DPoint(
+            int Label,
+            string IfcType,
+            string? Name,
+            double X2D,
+            double Y2D,
+            double XCanvas,
+            double YCanvas,
+            bool InCanvas
+        );
+
+        public record ProjectionCoverageReport(
+            double CanvasWidth,
+            double CanvasHeight,
+            double Padding,
+            string ProjectionPlane,
+            int Total,
+            int InCount,
+            int OutCount,
+            int Segments,
+            int Fittings,
+            int Terminals,
+            IReadOnlyList<Element2DPoint> Samples
+        );
+
+        // 快速版管網建構參數
+        public class PipeNetworkOptions
+        {
+            public bool IncludeFittings { get; set; } = true;
+            public bool UsePorts { get; set; } = true;
+            public double MergeToleranceMm { get; set; } = 50.0; // 3D 距離閾值（mm）
+            public bool CollapseEndpoints { get; set; } = true;
+            public bool AddSegmentEdgesIfNoPorts { get; set; } = true;
+            public int MaxFittingStarDegree { get; set; } = 8; // P1 參數化
+            public int MaxFittingPairs { get; set; } = 20;
+            public bool PropagateSystemFromNeighbors { get; set; } = true; // 新增：鄰接單一系統自動填補
+        }
+
+        // 建圖統計回報
+        public class GraphBuildReport
+        {
+            public int TotalNodes { get; set; }
+            public int TotalEdges { get; set; }
+            public int PortEdges { get; set; }
+            public int GeometryEdges { get; set; }
+            public int SegmentEdges { get; set; }
+            public int RewiredEdges { get; set; }
+            public int CollapsedEndpoints { get; set; }
+            public int Systems { get; set; }
+            public int Runs { get; set; }
+            public int ConvertedSegments { get; set; }
+            public int EndpointNodes { get; set; }
+            public bool UsedPorts { get; set; }
+            public double BuildMs { get; set; }
+            public string? Notes { get; set; }
+            // Integrity metrics
+            public int CrossSystemEdges { get; set; }
+            public int IsolatedNodes { get; set; }
+            public double FittingAvgDegree { get; set; }
+            public int FittingMaxDegree { get; set; }
+            public int RunMaxNodes { get; set; }
+            public double RunAvgNodes { get; set; }
+            public int PropagatedSystemAssignments { get; set; } // 新增：鄰接系統自動填補的節點數
+            public double? SegmentAvgLengthMm { get; set; }
+            public double? TolMm { get; set; }
+        }
+
+        // 快速版：建立管網節點 / 邊（Ports 優先 + 幾何補橋）
+        public async Task<(SchematicData data, GraphBuildReport report)> BuildPipeNetworkAsync(IModel model, PipeNetworkOptions? options = null)
+        {
+            var opt = options ?? new PipeNetworkOptions();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var data = new SchematicData();
+            var report = new GraphBuildReport();
+            await Task.Yield(); // 允許方法真正以非同步進入，避免 CS1998 警告
+
+            // 1) 收集元素（Segments / Fittings / Valves / Terminals）
+            //    現階段先以單節點代表元素；Segment 端點細化延後到 Fitting 插入階段（避免前期複雜度）。
+            //    若後續需要端點語意，可在資料層新增 2 端點拆分函式。
+            var elements = model.Instances.OfType<IIfcElement>().ToList();
+            var elementToNode = new Dictionary<IPersistEntity, SchematicNode>();
+            foreach (var e in elements)
+            {
+                try
+                {
+                    // 篩掉非相關類型（僅保留管線相關 Distribution） — 簡化：若 IncludeFittings=false 可跳過 Fitting/Valve。
+                    var t = e.ExpressType?.Name ?? string.Empty;
+                    bool isFitting = t.Contains("FlowFitting", StringComparison.OrdinalIgnoreCase) || t.EndsWith("Fitting", StringComparison.OrdinalIgnoreCase);
+                    bool isValve = t.Contains("Valve", StringComparison.OrdinalIgnoreCase) || t.Contains("FlowController", StringComparison.OrdinalIgnoreCase);
+                    if ((isFitting || isValve) && !opt.IncludeFittings) continue;
+
+                    var node = CreateNodeFromElement(e);
+                    // SystemKey 初步：使用 SystemAbbreviation or SystemName（稍後可擴充真正的系統關聯解析）
+                    node.SystemKey = node.SystemAbbreviation ?? node.SystemName ?? "(未指定)";
+                    elementToNode[e as IPersistEntity ?? throw new InvalidOperationException()] = node;
+                    data.Nodes.Add(node);
+                }
+                catch { }
+            }
+
+            // 1.1) Segment 端點拆分（方案 2: 使用 MergeToleranceMm 作為虛擬長度 L） + 建立 A-B SegmentEdge (附長度/直徑統計)
+            try
+            {
+                double virtualLenMm = Math.Max(1e-3, opt.MergeToleranceMm); // 使用者選擇方案 2
+                double scale = GetLengthToMillimetreScale(model); // model 單位 -> mm 的比例 (例: m -> 1000)
+                double mmToModel = scale > 1e-9 ? 1.0 / scale : 1.0; // mm 轉模型單位
+                double half = (virtualLenMm * mmToModel) * 0.5;
+                var segmentCenters = data.Nodes.Where(n => n.NodeKind == SchematicNode.SchematicNodeKind.PipeEnd && !n.IsSegmentEndpoint).ToList();
+                var newNodes = new List<SchematicNode>();
+                int converted = 0;
+                int segEdges = 0;
+                // 嘗試為每個 segment 抓取元件直徑（因 node.Entity 指回原 PipeSegment）
+                foreach (var seg in segmentCenters)
+                {
+                    seg.IsSegmentCenter = true;
+                    var basePos = seg.Position3D;
+                    var aPos = new Point3D(basePos.X - half, basePos.Y, basePos.Z);
+                    var bPos = new Point3D(basePos.X + half, basePos.Y, basePos.Z);
+                    var aNode = new SchematicNode
+                    {
+                        Id = seg.Id + "_A",
+                        Name = seg.Name + "-A",
+                        IfcType = seg.IfcType,
+                        Position3D = aPos,
+                        Position2D = new System.Windows.Point(aPos.X, aPos.Y),
+                        Entity = seg.Entity ?? default!,
+                        NodeKind = SchematicNode.SchematicNodeKind.PipeEnd,
+                        SystemKey = seg.SystemKey,
+                        SystemName = seg.SystemName,
+                        SystemAbbreviation = seg.SystemAbbreviation,
+                        SystemType = seg.SystemType,
+                        LevelName = seg.LevelName,
+                        IsSegmentEndpoint = true
+                    };
+                    var bNode = new SchematicNode
+                    {
+                        Id = seg.Id + "_B",
+                        Name = seg.Name + "-B",
+                        IfcType = seg.IfcType,
+                        Position3D = bPos,
+                        Position2D = new System.Windows.Point(bPos.X, bPos.Y),
+                        Entity = seg.Entity ?? default!,
+                        NodeKind = SchematicNode.SchematicNodeKind.PipeEnd,
+                        SystemKey = seg.SystemKey,
+                        SystemName = seg.SystemName,
+                        SystemAbbreviation = seg.SystemAbbreviation,
+                        SystemType = seg.SystemType,
+                        LevelName = seg.LevelName,
+                        IsSegmentEndpoint = true
+                    };
+                    newNodes.Add(aNode);
+                    newNodes.Add(bNode);
+                    if (seg.Entity != null)
+                    {
+                        elementToNode[seg.Entity] = aNode; // 暫時綁定第一端點供後續 Ports 邏輯
+                    }
+                    // 建立 Segment A-B 邊 (Origin=Segment)（含虛擬長度 / 直徑若可）
+                    double? nom=null, outer=null; string? srcNom=null, srcOuter=null;
+                    try { if (seg.Entity is IIfcPipeSegment pipeSeg) ExtractDiameters(model, pipeSeg, out nom, out outer, out srcNom, out srcOuter); } catch { }
+                    var segEdge = new SchematicEdge
+                    {
+                        Id = $"S_{aNode.Id}_{bNode.Id}_{data.Edges.Count + segEdges}",
+                        StartNode = aNode,
+                        EndNode = bNode,
+                        StartNodeId = aNode.Id,
+                        EndNodeId = bNode.Id,
+                        IsInferred = false,
+                        Origin = SchematicEdge.EdgeOriginKind.Segment,
+                        SystemName = aNode.SystemName ?? bNode.SystemName,
+                        SystemAbbreviation = aNode.SystemAbbreviation ?? bNode.SystemAbbreviation,
+                        SystemType = aNode.SystemType ?? bNode.SystemType,
+                        NominalDiameterMm = nom,
+                        OuterDiameterMm = outer,
+                        ValueSourceNominalDiameter = srcNom,
+                        ValueSourceOuterDiameter = srcOuter,
+                        LengthMm = virtualLenMm
+                    };
+                    aNode.Edges.Add(segEdge);
+                    bNode.Edges.Add(segEdge);
+                    data.Edges.Add(segEdge);
+                    segEdges++;
+                    converted++;
+                }
+                if (converted > 0)
+                {
+                    foreach (var center in segmentCenters)
+                        data.Nodes.Remove(center);
+                    foreach (var nn in newNodes)
+                        data.Nodes.Add(nn);
+                    report.ConvertedSegments = converted;
+                    report.EndpointNodes = newNodes.Count;
+                    report.SegmentEdges += segEdges;
+                    if (segEdges > 0)
+                    {
+                        // 目前每條虛擬段長度相同 virtualLenMm，可直接設定平均長度
+                        report.SegmentAvgLengthMm = virtualLenMm; // 若日後改為真實長度，需改成 totalSegLenMm/segEdges
+                    }
+                }
+            }
+            catch (Exception segEx)
+            {
+                report.Notes = (report.Notes == null ? string.Empty : report.Notes + ";") + $"SegmentSplitError:{segEx.Message}";
+            }
+
+            // 2) Ports 邊（若啟用）
+            if (opt.UsePorts)
+            {
+                try
+                {
+                    var rels = model.Instances.OfType<IIfcRelConnectsPorts>().ToList();
+                    foreach (var rel in rels)
+                    {
+                        var p1 = rel.RelatingPort as IIfcPort;
+                        var p2 = rel.RelatedPort as IIfcPort;
+                        if (p1 == null || p2 == null) continue;
+                        // 更健壯：不再強制要求 ContainedIn；使用 ResolveHostProductForPort 解析宿主
+                        var host1 = ResolveHostProductForPort(p1);
+                        var host2 = ResolveHostProductForPort(p2);
+                        if (host1 == null || host2 == null || ReferenceEquals(host1, host2)) continue;
+                        if (elementToNode.TryGetValue(host1 as IPersistEntity ?? default!, out var n1) &&
+                            elementToNode.TryGetValue(host2 as IPersistEntity ?? default!, out var n2))
+                        {
+                            var edge = new SchematicEdge
+                            {
+                                Id = $"E_{n1.Id}_{n2.Id}_{data.Edges.Count}",
+                                StartNode = n1,
+                                EndNode = n2,
+                                StartNodeId = n1.Id,
+                                EndNodeId = n2.Id,
+                                Connection = rel as IPersistEntity ?? default!,
+                                Entity = rel as IPersistEntity ?? default!,
+                                IsInferred = false,
+                                Origin = SchematicEdge.EdgeOriginKind.Ports,
+                                SystemName = n1.SystemName ?? n2.SystemName,
+                                SystemAbbreviation = n1.SystemAbbreviation ?? n2.SystemAbbreviation,
+                                SystemType = n1.SystemType ?? n2.SystemType
+                            };
+                            data.Edges.Add(edge);
+                            n1.Edges.Add(edge);
+                            n2.Edges.Add(edge);
+                            report.PortEdges++;
+                        }
+                    }
+                    report.UsedPorts = report.PortEdges > 0;
+                }
+                catch { }
+            }
+
+            // 3) 幾何補橋（Ports 不足或為 0 時適用；亦可策略：即使有 Ports 但仍允許補齊孤立節點）
+            try
+            {
+                double tolMm = Math.Max(1e-3, opt.MergeToleranceMm);
+                double tol2 = tolMm * tolMm;
+                // 依 SystemKey 分桶
+                var buckets = data.Nodes.GroupBy(n => n.SystemKey ?? "(未指定)");
+                foreach (var bucket in buckets)
+                {
+                    var list = bucket.ToList();
+                    if (list.Count <= 1) continue;
+                    // 建立已有度數判斷：孤立節點優先補
+                    // 先建立 spatial hash：以 tolMm 為 cell 尺寸
+                    double cell = tolMm;
+                    var grid = new Dictionary<(int,int,int), List<SchematicNode>>();
+                    (int,int,int) keyFor(SchematicNode n)
+                    {
+                        var p = n.Position3D; return ((int)Math.Floor(p.X / cell), (int)Math.Floor(p.Y / cell), (int)Math.Floor(p.Z / cell));
+                    }
+                    void addToGrid(SchematicNode n)
+                    {
+                        var k = keyFor(n); if (!grid.TryGetValue(k, out var lst)) { lst = new List<SchematicNode>(); grid[k] = lst; } lst.Add(n);
+                    }
+                    foreach (var n in list) addToGrid(n);
+
+                    var existingEdgeSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var e in data.Edges)
+                    {
+                        // 無方向 key
+                        var a = e.StartNodeId; var b = e.EndNodeId;
+                        if (string.Compare(a, b, StringComparison.Ordinal) > 0) (a, b) = (b, a);
+                        existingEdgeSet.Add($"{a}__{b}");
+                    }
+
+                    var addedPairs = 0;
+                    foreach (var n in list)
+                    {
+                        // 只對度數=0 或 度數過低的節點做鄰近補橋（避免全圖完全平方級）
+                        int deg = n.Edges.Count;
+                        if (deg > 2) continue;
+                        var pk = keyFor(n);
+                        for (int dx = -1; dx <= 1; dx++)
+                        for (int dy = -1; dy <= 1; dy++)
+                        for (int dz = -1; dz <= 1; dz++)
+                        {
+                            var nk = (pk.Item1 + dx, pk.Item2 + dy, pk.Item3 + dz);
+                            if (!grid.TryGetValue(nk, out var candidates)) continue;
+                            foreach (var m in candidates)
+                            {
+                                if (ReferenceEquals(n, m)) continue;
+                                // 相同元素避免多餘邊
+                                var aId = n.Id; var bId = m.Id;
+                                if (string.Compare(aId, bId, StringComparison.Ordinal) > 0) (aId, bId) = (bId, aId);
+                                var key = $"{aId}__{bId}";
+                                if (existingEdgeSet.Contains(key)) continue;
+                                var d2 = Dist2(n.Position3D, m.Position3D);
+                                if (d2 > tol2) continue;
+                                // 建立補橋邊
+                                var edge = new SchematicEdge
+                                {
+                                    Id = $"G_{aId}_{bId}_{data.Edges.Count}",
+                                    StartNode = n,
+                                    EndNode = m,
+                                    StartNodeId = n.Id,
+                                    EndNodeId = m.Id,
+                                    IsInferred = true,
+                                    Origin = SchematicEdge.EdgeOriginKind.Geometry,
+                                    SystemName = n.SystemName ?? m.SystemName,
+                                    SystemAbbreviation = n.SystemAbbreviation ?? m.SystemAbbreviation,
+                                    SystemType = n.SystemType ?? m.SystemType
+                                };
+                                data.Edges.Add(edge);
+                                n.Edges.Add(edge);
+                                m.Edges.Add(edge);
+                                existingEdgeSet.Add(key);
+                                report.GeometryEdges++;
+                                addedPairs++;
+                                if (addedPairs > 1000 && list.Count > 5000) break; // 粗略節流，避免爆炸
+                            }
+                            if (addedPairs > 1000 && list.Count > 5000) break;
+                        }
+                        if (addedPairs > 1000 && list.Count > 5000) break;
+                    }
+                }
+            }
+            catch (Exception geoEx)
+            {
+                report.Notes = (report.Notes == null ? string.Empty : report.Notes + ";") + $"GeometryFallbackError:{geoEx.Message}";
+            }
+
+            // 4) Fitting 重寫 (策略 B)：
+            //    允許在距離內(<=tol)的端點/節點集合中，若兩節點之間尚無 a--b 直邊也可主動建立 a-fit 與 fit-b 組合，
+            //    但需控制：
+            //      * 每個 fitting 最大 star 度數 (maxStarDegree)
+            //      * 每個 fitting 產生的 (a,b) 配對數上限 (maxPairs)
+            //      * 避免重複邊 / 自連
+            try
+            {
+                double tol = Math.Max(1e-3, opt.MergeToleranceMm);
+                double tol2 = tol * tol;
+                var fittings = data.Nodes.Where(n => n.NodeKind == SchematicNode.SchematicNodeKind.Fitting).ToList();
+                if (fittings.Count > 0)
+                {
+                    // 建立鄰接快速查詢
+                    var edgeSet = new HashSet<string>(data.Edges.Select(e =>
+                    {
+                        var a = e.StartNodeId; var b = e.EndNodeId; if (string.Compare(a, b, StringComparison.Ordinal) > 0) (a, b) = (b, a); return $"{a}__{b}";
+                    }), StringComparer.OrdinalIgnoreCase);
+                    var edgesToAdd = new List<SchematicEdge>();
+                    int maxStarDegree = Math.Max(1, opt.MaxFittingStarDegree);   // 每個 fitting 最多連幾個外部節點（>=1）
+                    int maxPairs = Math.Max(1, opt.MaxFittingPairs);             // 每個 fitting 最多產生多少 (a,b) 組合（>=1）
+                    foreach (var fit in fittings)
+                    {
+                        var near = data.Nodes.Where(n => !ReferenceEquals(n, fit) && n.SystemKey == fit.SystemKey && Dist2(n.Position3D, fit.Position3D) <= tol2).ToList();
+                        if (near.Count < 1) continue;
+                        // 依距離排序，取前 maxStarDegree
+                        near = near.OrderBy(n => Dist2(n.Position3D, fit.Position3D)).Take(maxStarDegree).ToList();
+
+                        // 先建立 star 邊 (node - fit) 如果不存在
+                        var starEnds = new List<SchematicNode>();
+                        foreach (var n in near)
+                        {
+                            var x1 = n.Id; var x2 = fit.Id; if (string.Compare(x1, x2, StringComparison.Ordinal) > 0) (x1, x2) = (x2, x1);
+                            var k = $"{x1}__{x2}";
+                            if (edgeSet.Contains(k)) continue; // 已存在任一方向邊
+                            var eStar = new SchematicEdge
+                            {
+                                Id = $"R_{x1}_{x2}_{data.Edges.Count + edgesToAdd.Count}",
+                                StartNode = n,
+                                EndNode = fit,
+                                StartNodeId = n.Id,
+                                EndNodeId = fit.Id,
+                                IsInferred = true,
+                                Origin = SchematicEdge.EdgeOriginKind.Rewired,
+                                SystemName = n.SystemName ?? fit.SystemName,
+                                SystemAbbreviation = n.SystemAbbreviation ?? fit.SystemAbbreviation,
+                                SystemType = n.SystemType ?? fit.SystemType
+                            };
+                            edgesToAdd.Add(eStar);
+                            edgeSet.Add(k);
+                            starEnds.Add(n);
+                            report.RewiredEdges++;
+                        }
+
+                        // 再嘗試為 star 端點之間（透過 fitting）建立「隱式」替換語意：
+                        // 若存在直接 a--b Ports/Geometry 邊，理論上可刪除；策略 B 先不刪除，僅在缺時保留 star。
+                        // （保守：不刪原邊，以免失去長度/方向資訊。）
+                        // 可選：計數對數，不實際新增 a-b 邊。
+                        int pairCount = 0;
+                        for (int i = 0; i < starEnds.Count && pairCount < maxPairs; i++)
+                        {
+                            for (int j = i + 1; j < starEnds.Count && pairCount < maxPairs; j++)
+                            {
+                                // 僅計數，不新增新邊；未來若需要可插入特殊 EdgeOriginKind (e.g., ThroughFitting)
+                                pairCount++;
+                            }
+                        }
+                    }
+                    if (edgesToAdd.Count > 0)
+                    {
+                        foreach (var ad in edgesToAdd)
+                        {
+                            data.Edges.Add(ad);
+                            ad.StartNode.Edges.Add(ad);
+                            ad.EndNode.Edges.Add(ad);
+                        }
+                    }
+                }
+            }
+            catch (Exception fitEx)
+            {
+                report.Notes = (report.Notes == null ? string.Empty : report.Notes + ";") + $"FittingRewireError:{fitEx.Message}";
+            }
+
+            // 4.5)（新增）穿越配件連線：當啟用旗標時，對於度數=2 的配件，直接將兩端鄰居節點以 Rewired 邊相連。
+            // 注意：此為 P4 Quick 的補強，與 Ports-only 流程中的 ThroughFitting 行為對齊。
+            if (ThroughFittingRewireEnabled)
+            {
+                try
+                {
+                    var existingPairs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var e in data.Edges)
+                    {
+                        var a = e.StartNodeId; var b = e.EndNodeId;
+                        if (string.Compare(a, b, StringComparison.Ordinal) > 0) (a, b) = (b, a);
+                        existingPairs.Add($"{a}__{b}");
+                    }
+
+                    int created = 0;
+                    var degree2Fittings = data.Nodes
+                        .Where(n => n.NodeKind == SchematicNode.SchematicNodeKind.Fitting && n.Edges.Count == 2)
+                        .ToList();
+                    foreach (var fit in degree2Fittings)
+                    {
+                        var e1 = fit.Edges[0];
+                        var e2 = fit.Edges[1];
+                        var n1 = ReferenceEquals(e1.StartNode, fit) ? e1.EndNode : e1.StartNode;
+                        var n2 = ReferenceEquals(e2.StartNode, fit) ? e2.EndNode : e2.StartNode;
+                        if (n1 == null || n2 == null) continue;
+                        if (ReferenceEquals(n1, n2)) continue;
+
+                        var aId = n1.Id; var bId = n2.Id;
+                        if (string.Compare(aId, bId, StringComparison.Ordinal) > 0) (aId, bId) = (bId, aId);
+                        var key = $"{aId}__{bId}";
+                        if (existingPairs.Contains(key)) continue; // 已有更高優先邊（Segment/Ports）
+
+                        var edge = new SchematicEdge
+                        {
+                            Id = $"TF_{aId}_{bId}_{data.Edges.Count}",
+                            StartNode = n1,
+                            EndNode = n2,
+                            StartNodeId = n1.Id,
+                            EndNodeId = n2.Id,
+                            Connection = fit.Entity ?? default!,
+                            Entity = fit.Entity ?? default!,
+                            IsInferred = true,
+                            Origin = SchematicEdge.EdgeOriginKind.Rewired,
+                            SystemName = fit.SystemName ?? n1.SystemName ?? n2.SystemName,
+                            SystemAbbreviation = fit.SystemAbbreviation ?? n1.SystemAbbreviation ?? n2.SystemAbbreviation,
+                            SystemType = fit.SystemType ?? n1.SystemType ?? n2.SystemType
+                        };
+                        data.Edges.Add(edge);
+                        n1.Edges.Add(edge);
+                        n2.Edges.Add(edge);
+                        existingPairs.Add(key);
+                        created++;
+                    }
+                    if (created > 0)
+                    {
+                        report.RewiredEdges += created;
+                        data.Metadata["ThroughFittingPairsCreated"] = created.ToString();
+                    }
+                }
+                catch (Exception tfEx)
+                {
+                    report.Notes = (report.Notes == null ? string.Empty : report.Notes + ";") + $"ThroughFittingError:{tfEx.Message}";
+                }
+            }
+
+            // 5) 系統抽取（以 IfcRelAssignsToGroup 為主，回填更精準的 SystemKey / Name / Abbreviation / Type）
+            try
+            {
+                var assignsAll = model.Instances.OfType<IIfcRelAssignsToGroup>()?.ToList() ?? new List<IIfcRelAssignsToGroup>();
+                // 建立 Element -> Systems (多系統時先選第一個，可擴充)
+                var elementToSystem = new Dictionary<IPersistEntity, IIfcSystem>();
+                foreach (var rel in assignsAll)
+                {
+                    if (rel.RelatingGroup is IIfcSystem sys && rel.RelatedObjects != null)
+                    {
+                        foreach (var robj in rel.RelatedObjects)
+                        {
+                            if (robj is IPersistEntity pe && !elementToSystem.ContainsKey(pe))
+                            {
+                                elementToSystem[pe] = sys;
+                            }
+                        }
+                    }
+                }
+                foreach (var kv in elementToNode)
+                {
+                    var elem = kv.Key; var node = kv.Value;
+                    if (elementToSystem.TryGetValue(elem, out var sys))
+                    {
+                        var (sName, sAbbr, sType) = GetSystemMetadata(sys);
+                        node.SystemName = sName;
+                        node.SystemAbbreviation = sAbbr;
+                        node.SystemType = sType;
+                        node.SystemKey = sAbbr ?? sName ?? node.SystemKey;
+                    }
+                    // 若仍未取得 SystemKey，保持原值或設為 "(未指定)"
+                    node.SystemKey ??= node.SystemAbbreviation ?? node.SystemName ?? "(未指定)";
+                }
+                // 5.1 SystemKey 正規化 (去頭尾空白, collapse 空白, 全大寫)
+                foreach (var n in data.Nodes)
+                {
+                    if (!string.IsNullOrWhiteSpace(n.SystemKey))
+                        n.SystemKey = NormalizeSystemKey(n.SystemKey);
+                    else
+                        n.SystemKey = "(未指定)";
+                }
+                // 5.2 系統鄰接傳播（單一鄰居系統一致時）
+                if (opt.PropagateSystemFromNeighbors)
+                {
+                    int propagated = 0;
+                    foreach (var node in data.Nodes)
+                    {
+                        if (node.SystemKey != "(未指定)") continue;
+                        var neighborKeys = node.Edges
+                            .Select(e => ReferenceEquals(e.StartNode, node) ? e.EndNode : e.StartNode)
+                            .Where(nn => nn != null)
+                            .Select(nn => nn!.SystemKey)
+                            .Where(k => !string.IsNullOrWhiteSpace(k) && k != "(未指定)")
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .Take(2)
+                            .ToList();
+                        if (neighborKeys.Count == 1)
+                        {
+                            node.SystemKey = neighborKeys[0]!;
+                            propagated++;
+                        }
+                    }
+                    if (propagated > 0) report.PropagatedSystemAssignments = propagated;
+                }
+
+                // 5.3（新增）邊的系統回填：若邊缺少 SystemAbbreviation/Name，從兩端節點回填（避免被系統過濾隱藏）
+                try
+                {
+                    foreach (var e in data.Edges)
+                    {
+                        bool missingSys = string.IsNullOrWhiteSpace(e.SystemAbbreviation) && string.IsNullOrWhiteSpace(e.SystemName);
+                        if (!missingSys) continue;
+                        var a = e.StartNode; var b = e.EndNode;
+                        // 先取縮寫，若皆空再取名稱；優先非「(未指定)」
+                        string? abbr = null;
+                        if (!string.IsNullOrWhiteSpace(a?.SystemAbbreviation) && !string.Equals(a!.SystemAbbreviation, "(未指定)", StringComparison.OrdinalIgnoreCase)) abbr = a!.SystemAbbreviation;
+                        if (string.IsNullOrWhiteSpace(abbr) && !string.IsNullOrWhiteSpace(b?.SystemAbbreviation) && !string.Equals(b!.SystemAbbreviation, "(未指定)", StringComparison.OrdinalIgnoreCase)) abbr = b!.SystemAbbreviation;
+
+                        string? name = null;
+                        if (!string.IsNullOrWhiteSpace(a?.SystemName) && !string.Equals(a!.SystemName, "(未指定)", StringComparison.OrdinalIgnoreCase)) name = a!.SystemName;
+                        if (string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(b?.SystemName) && !string.Equals(b!.SystemName, "(未指定)", StringComparison.OrdinalIgnoreCase)) name = b!.SystemName;
+
+                        e.SystemAbbreviation ??= abbr;
+                        e.SystemName ??= name;
+                        // 若仍為空，最後以 a/b 任一現值回填（可能為 "(未指定)"）
+                        e.SystemAbbreviation ??= a?.SystemAbbreviation ?? b?.SystemAbbreviation;
+                        e.SystemName ??= a?.SystemName ?? b?.SystemName;
+                        e.SystemType ??= a?.SystemType ?? b?.SystemType;
+                    }
+                }
+                catch { }
+            }
+            catch (Exception sysEx)
+            {
+                report.Notes = (report.Notes == null ? string.Empty : report.Notes + ";") + $"SystemExtractError:{sysEx.Message}";
+            }
+
+            // 6) Run (Connected Components) 計算：以 SystemKey 先分桶，再做 BFS/DFS (蒐集 run 節點數)
+            try
+            {
+                int globalRunSeed = 0;
+                var systemBuckets = data.Nodes.GroupBy(n => n.SystemKey ?? "(未指定)");
+                var runCounts = new List<int>();
+                foreach (var bucket in systemBuckets)
+                {
+                    var unvisited = new HashSet<SchematicNode>(bucket);
+                    while (unvisited.Count > 0)
+                    {
+                        var start = unvisited.First();
+                        unvisited.Remove(start);
+                        int runId = ++globalRunSeed;
+                        var stack = new Stack<SchematicNode>();
+                        stack.Push(start);
+                        start.RunId = runId;
+                        int rc = 0;
+                        while (stack.Count > 0)
+                        {
+                            var curr = stack.Pop();
+                            rc++;
+                            foreach (var e in curr.Edges)
+                            {
+                                var other = e.StartNode == curr ? e.EndNode : e.StartNode;
+                                if (!ReferenceEquals(curr.SystemKey, other.SystemKey)) continue; // 不跨系統
+                                if (other.RunId == 0)
+                                {
+                                    other.RunId = runId;
+                                    if (unvisited.Remove(other)) stack.Push(other);
+                                }
+                                // 邊 RunId 指派（若雙端皆已確立 run）
+                                if (curr.RunId == runId && other.RunId == runId)
+                                {
+                                    e.RunId = runId;
+                                }
+                            }
+                        }
+                        runCounts.Add(rc);
+                    }
+                }
+                report.Runs = data.Nodes.Select(n => n.RunId).Where(id => id > 0).Distinct().Count();
+                if (runCounts.Count > 0)
+                {
+                    report.RunMaxNodes = runCounts.Max();
+                    report.RunAvgNodes = runCounts.Average();
+                }
+            }
+            catch (Exception runEx)
+            {
+                report.Notes = (report.Notes == null ? string.Empty : report.Notes + ";") + $"RunCalcError:{runEx.Message}";
+            }
+
+            // 7) 邊去重與優先排序 (Segment>Ports>Rewired>Geometry) + 統計重算
+            try
+            {
+                var priority = new Dictionary<SchematicEdge.EdgeOriginKind, int>
+                {
+                    { SchematicEdge.EdgeOriginKind.Segment, 0 },
+                    { SchematicEdge.EdgeOriginKind.Ports, 1 },
+                    { SchematicEdge.EdgeOriginKind.Rewired, 2 },
+                    { SchematicEdge.EdgeOriginKind.Geometry, 3 }
+                };
+                var pairBest = new Dictionary<string, SchematicEdge>(StringComparer.OrdinalIgnoreCase);
+                foreach (var e in data.Edges)
+                {
+                    var a = e.StartNodeId; var b = e.EndNodeId; if (string.Compare(a, b, StringComparison.Ordinal) > 0) (a, b) = (b, a);
+                    var key = a + "__" + b;
+                    if (!pairBest.TryGetValue(key, out var exist)) pairBest[key] = e; else if (priority[e.Origin] < priority[exist.Origin]) pairBest[key] = e;
+                }
+                if (pairBest.Count != data.Edges.Count)
+                {
+                    foreach (var n in data.Nodes) n.Edges.Clear();
+                    data.Edges.Clear();
+                    foreach (var kv in pairBest)
+                    {
+                        var e = kv.Value; data.Edges.Add(e); e.StartNode.Edges.Add(e); e.EndNode.Edges.Add(e);
+                    }
+                }
+                report.PortEdges = data.Edges.Count(e => e.Origin == SchematicEdge.EdgeOriginKind.Ports);
+                report.GeometryEdges = data.Edges.Count(e => e.Origin == SchematicEdge.EdgeOriginKind.Geometry);
+                report.SegmentEdges = data.Edges.Count(e => e.Origin == SchematicEdge.EdgeOriginKind.Segment);
+                report.RewiredEdges = data.Edges.Count(e => e.Origin == SchematicEdge.EdgeOriginKind.Rewired);
+            }
+            catch (Exception dedupEx)
+            {
+                report.Notes = (report.Notes == null ? string.Empty : report.Notes + ";") + $"DedupError:{dedupEx.Message}";
+            }
+
+            // 8) Integrity 檢查（去重後）
+            try
+            {
+                report.CrossSystemEdges = data.Edges.Count(e => !string.Equals(e.StartNode.SystemKey, e.EndNode.SystemKey, StringComparison.OrdinalIgnoreCase));
+                report.IsolatedNodes = data.Nodes.Count(n => n.Edges.Count == 0);
+                var fittingNodes = data.Nodes.Where(n => n.NodeKind == SchematicNode.SchematicNodeKind.Fitting).ToList();
+                if (fittingNodes.Count > 0)
+                {
+                    report.FittingMaxDegree = fittingNodes.Max(n => n.Edges.Count);
+                    report.FittingAvgDegree = fittingNodes.Average(n => n.Edges.Count);
+                }
+                var cross = data.Edges.Where(e => !string.Equals(e.StartNode.SystemKey, e.EndNode.SystemKey, StringComparison.OrdinalIgnoreCase))
+                                       .Take(20)
+                                       .Select(e => new { e.StartNodeId, e.EndNodeId, SK1 = e.StartNode.SystemKey, SK2 = e.EndNode.SystemKey, e.Origin })
+                                       .ToList();
+                if (cross.Count > 0)
+                {
+                    data.Metadata["CrossSystemEdges"] = System.Text.Json.JsonSerializer.Serialize(cross);
+                }
+            }
+            catch (Exception integEx)
+            {
+                report.Notes = (report.Notes == null ? string.Empty : report.Notes + ";") + $"IntegrityError:{integEx.Message}";
+            }
+
+            // TODO: 幾何補橋、SegmentEdges、Fitting 插入、Run 計算、Report 填寫
+            report.TotalNodes = data.Nodes.Count;
+            report.TotalEdges = data.Edges.Count;
+            report.TolMm = opt.MergeToleranceMm;
+            report.Systems = data.Nodes.Select(n => n.SystemKey).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+            sw.Stop();
+            report.BuildMs = sw.Elapsed.TotalMilliseconds;
+            // 補充 notes
+            var notesParts = new List<string>();
+            if (!report.UsedPorts) notesParts.Add("NoPortEdgesOrPortsDisabled");
+            notesParts.Add($"Strategy=Ports+GeomFallback+FittingRewire+SegmentSplit");
+            notesParts.Add($"Runs={report.Runs}");
+            if (report.ConvertedSegments > 0) notesParts.Add($"SegmentSplit={report.ConvertedSegments}");
+            notesParts.Add($"CrossSysEdges={report.CrossSystemEdges}");
+            if (report.IsolatedNodes > 0) notesParts.Add($"Isolated={report.IsolatedNodes}");
+            if (report.TolMm.HasValue) notesParts.Add($"TolMm={report.TolMm:0.#}");
+            notesParts.Add($"StarConfig={opt.MaxFittingStarDegree}/{opt.MaxFittingPairs}");
+            if (report.RunMaxNodes > 0) notesParts.Add($"RunMaxNodes={report.RunMaxNodes}");
+            if (report.RunAvgNodes > 0) notesParts.Add($"RunAvgNodes={report.RunAvgNodes:0.#}");
+            if (report.SegmentAvgLengthMm.HasValue) notesParts.Add($"SegAvgLenMm={report.SegmentAvgLengthMm:0.#}");
+            if (!string.IsNullOrWhiteSpace(report.Notes)) notesParts.Add(report.Notes);
+            report.Notes = string.Join(";", notesParts.Distinct());
+            data.Metadata["GraphBuildReport"] = System.Text.Json.JsonSerializer.Serialize(report);
+            return (data, report);
+        }
+
+        private static string NormalizeSystemKey(string key)
+        {
+            try
+            {
+                var trimmed = key.Trim();
+                // Collapse internal whitespace
+                trimmed = System.Text.RegularExpressions.Regex.Replace(trimmed, "\u3000", " "); // full width space
+                // 將連續空白 (含 Tab / 換行) 摺疊為單一空白
+                trimmed = System.Text.RegularExpressions.Regex.Replace(trimmed, @"\s+", " ");
+                trimmed = trimmed.ToUpperInvariant();
+                return trimmed;
+            }
+            catch { return key?.ToUpperInvariant() ?? "(未指定)"; }
+        }
+
+        // 取得 Port 的宿主元素（若為 IfcDistributionPort 通常 ContainedIn.RelatingElement）
+        private IIfcElement? TryGetHostElement(IIfcPort port)
+        {
+            try
+            {
+                var relObj = port.ContainedIn;
+                // 單一關聯
+                if (relObj is IIfcRelConnectsPortToElement single)
+                {
+                    var elem = single.RelatedElement as IIfcElement;
+                    if (elem != null) return elem;
+                }
+                // 多關聯集合（某些資料載入器可能包成集合）
+                if (relObj is IEnumerable<IIfcRelConnectsPortToElement> many)
+                {
+                    var first = many.FirstOrDefault();
+                    if (first != null)
+                    {
+                        var elem = first.RelatedElement as IIfcElement;
+                        if (elem != null) return elem;
+                    }
+                }
+                // Dynamic 後備
+                try { return (relObj as dynamic)?.RelatingElement as IIfcElement; } catch { }
+                try { return (relObj as dynamic)?.RelatedElement as IIfcElement; } catch { }
+            }
+            catch { }
+            return null;
+        }
         private enum ProjectionPlane { XY, XZ, YZ }
         // 新增：對外公開可選平面枚舉（供 V1 流程使用）
         public enum UserProjectionPlane { XY, XZ, YZ }
@@ -201,6 +975,9 @@ namespace IFC_Viewer_00.Services
             // 屬性集：擴充對常見鍵的支援（NominalDiameter/DN、Diameter、Outside/Outer Diameter、Inside Diameter 等）
             try
             {
+                // 規則：若存在 Pset[Mechanical].Diameter，優先作為 NominalDiameter(mm)
+                // 其他來源（NominalDiameter/DN/NPS/Diameter/InsideDiameter）為候補
+                int nomPriority = 0; // 0: 未設定; 1: 一般來源; 2: Mechanical.Diameter
                 static double? ParseNumberWithUnits(object? v, double mmScale)
                 {
                     if (v == null) return null;
@@ -233,6 +1010,8 @@ namespace IFC_Viewer_00.Services
                 {
                     var pset = defBy.RelatingPropertyDefinition as IIfcPropertySet;
                     if (pset == null) continue;
+                    var psetName = IFC_Viewer_00.Services.IfcStringHelper.FromValue(pset.Name) ?? string.Empty;
+                    bool isMechanicalPset = psetName.IndexOf("Mechanical", StringComparison.OrdinalIgnoreCase) >= 0;
                     foreach (var p in pset.HasProperties ?? Enumerable.Empty<IIfcProperty>())
                     {
                         var name = (IfcStringHelper.FromValue(p?.Name) ?? string.Empty).Trim();
@@ -240,19 +1019,22 @@ namespace IFC_Viewer_00.Services
                         var val = sv.NominalValue;
 
                         // Nominal / DN / NPS / Diameter → nominalMm
-                        if (nominalMm == null)
                         {
-                            if (string.Equals(name, "NominalDiameter", StringComparison.OrdinalIgnoreCase) ||
+                            bool nameMatches =
+                                string.Equals(name, "NominalDiameter", StringComparison.OrdinalIgnoreCase) ||
                                 string.Equals(name, "Nominal Diameter", StringComparison.OrdinalIgnoreCase) ||
                                 string.Equals(name, "DN", StringComparison.OrdinalIgnoreCase) ||
                                 string.Equals(name, "Diameter", StringComparison.OrdinalIgnoreCase) ||
                                 string.Equals(name, "Nominal Pipe Size", StringComparison.OrdinalIgnoreCase) ||
-                                string.Equals(name, "NPS", StringComparison.OrdinalIgnoreCase))
+                                string.Equals(name, "NPS", StringComparison.OrdinalIgnoreCase);
+                            if (nameMatches)
                             {
+                                int candPri = (isMechanicalPset && string.Equals(name, "Diameter", StringComparison.OrdinalIgnoreCase)) ? 2 : 1;
                                 var num = TryConvertIfcValueToDouble(val) ?? ParseNumberWithUnits(val, scale);
-                                if (num.HasValue && num.Value > 0)
+                                if (num.HasValue && num.Value > 0 && candPri >= nomPriority)
                                 {
                                     nominalMm = num.Value;
+                                    nomPriority = candPri;
                                     srcNom = $"Pset.{pset.Name}." + name;
                                 }
                             }
@@ -278,17 +1060,17 @@ namespace IFC_Viewer_00.Services
                             }
                         }
 
-                        // Inside Diameter（不直接用於標籤，但可作為 nominal 的候補）
-                        if (nominalMm == null)
+                        // Inside Diameter（一般候補，優先級=1；若已採用 Mechanical.Diameter 則不覆蓋）
                         {
                             if (string.Equals(name, "InsideDiameter", StringComparison.OrdinalIgnoreCase) ||
                                 string.Equals(name, "Inside Diameter", StringComparison.OrdinalIgnoreCase) ||
                                 string.Equals(name, "ID", StringComparison.OrdinalIgnoreCase))
                             {
                                 var num = TryConvertIfcValueToDouble(val) ?? ParseNumberWithUnits(val, scale);
-                                if (num.HasValue && num.Value > 0)
+                                if (num.HasValue && num.Value > 0 && nomPriority < 2)
                                 {
                                     nominalMm = num.Value;
+                                    nomPriority = Math.Max(nomPriority, 1);
                                     srcNom = $"Pset.{pset.Name}." + name;
                                 }
                             }
@@ -854,7 +1636,7 @@ namespace IFC_Viewer_00.Services
                             node.LevelName = GetLevelNameForProduct(ifcModel, pf);
                             data.Nodes.Add(node);
                             nodeMap[pe] = node;
-                            foreach (var p in GetPorts(pf)) portToNode[p] = node;
+                            foreach (var p in GetPorts(pf)) { if (p != null) portToNode[p] = node; }
                         }
                         else if (pe is IIfcFlowTerminal term)
                         {
@@ -868,7 +1650,7 @@ namespace IFC_Viewer_00.Services
                             node.LevelName = GetLevelNameForProduct(ifcModel, term);
                             data.Nodes.Add(node);
                             nodeMap[pe] = node;
-                            foreach (var p in GetPorts(term)) portToNode[p] = node;
+                            foreach (var p in GetPorts(term)) { if (p != null) portToNode[p] = node; }
                         }
                         else if (pe is IIfcValve valve)
                         {
@@ -882,7 +1664,7 @@ namespace IFC_Viewer_00.Services
                             node.LevelName = GetLevelNameForProduct(ifcModel, valve);
                             data.Nodes.Add(node);
                             nodeMap[pe] = node;
-                            foreach (var p in GetPorts(valve)) portToNode[p] = node;
+                            foreach (var p in GetPorts(valve)) { if (p != null) portToNode[p] = node; }
                         }
                         // 其餘成員（含 IfcPipeSegment 與非管線相關元件）在此遍略過
                     }
@@ -1101,7 +1883,7 @@ namespace IFC_Viewer_00.Services
                 foreach (var p in GetPorts(elem))
                 {
                     // 同一個元素的多個 Port 都指到相同 Node
-                    portToNode[p] = node;
+                    if (p != null) portToNode[p] = node;
                 }
             }
 
@@ -1151,9 +1933,317 @@ namespace IFC_Viewer_00.Services
                 data.Edges.Add(edge);
             }
 
+            // 4.5 依需要：對「度數=2 的 IfcPipeFitting」做穿越配件連線（ThroughFitting）
+            // 僅在啟用選項時進行，避免 Tee/Cross 被誤連；此處限制為度數=2。
+            if (ThroughFittingRewireEnabled)
+            {
+                try
+                {
+                    // 建立快速查詢以避免重複邊
+                    var existingPairs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var e in data.Edges)
+                    {
+                        var s = e.StartNodeId; var t = e.EndNodeId;
+                        if (string.Compare(s, t, StringComparison.Ordinal) > 0) (s, t) = (t, s);
+                        existingPairs.Add($"{s}__{t}");
+                    }
+
+                    // 篩選出 Fitting 節點且度數==2
+                    var fittings = data.Nodes.Where(n => n.NodeKind == SchematicNode.SchematicNodeKind.Fitting && n.Edges.Count == 2).ToList();
+                    foreach (var fit in fittings)
+                    {
+                        var e1 = fit.Edges[0];
+                        var e2 = fit.Edges[1];
+                        var n1 = ReferenceEquals(e1.StartNode, fit) ? e1.EndNode : e1.StartNode;
+                        var n2 = ReferenceEquals(e2.StartNode, fit) ? e2.EndNode : e2.StartNode;
+                        if (n1 == null || n2 == null) continue;
+                        if (ReferenceEquals(n1, n2)) continue;
+
+                        // 檢查是否已有 n1-n2 之間的邊
+                        var aId = n1.Id; var bId = n2.Id;
+                        if (string.Compare(aId, bId, StringComparison.Ordinal) > 0) (aId, bId) = (bId, aId);
+                        var key = $"{aId}__{bId}";
+                        if (existingPairs.Contains(key)) continue;
+
+                        // 建立推導邊（Rewired / ThroughFitting）
+                        var edge = new SchematicEdge
+                        {
+                            Id = $"TF_{aId}_{bId}_{data.Edges.Count}",
+                            StartNode = n1,
+                            EndNode = n2,
+                            StartNodeId = n1.Id,
+                            EndNodeId = n2.Id,
+                            // 將 Connection/Entity 指向該 fitting 實體以利追蹤（可視為來源）
+                            Connection = fit.Entity ?? default!,
+                            Entity = fit.Entity ?? default!,
+                            IsInferred = true,
+                            Origin = SchematicEdge.EdgeOriginKind.Rewired,
+                            SystemName = fit.SystemName ?? n1.SystemName ?? n2.SystemName,
+                            SystemAbbreviation = fit.SystemAbbreviation ?? n1.SystemAbbreviation ?? n2.SystemAbbreviation,
+                            SystemType = fit.SystemType ?? n1.SystemType ?? n2.SystemType
+                        };
+                        data.Edges.Add(edge);
+                        n1.Edges.Add(edge);
+                        n2.Edges.Add(edge);
+                        existingPairs.Add(key);
+                    }
+                }
+                catch { }
+            }
+
             // 樓層資訊
             try { PopulateLevels(ifcModel, data); } catch { }
             return Task.FromResult(data);
+        }
+
+        // 兼容封裝：舊命名 BuildP5PointProjectionAsync → 轉呼叫新的 CheckProjectionCoverageAsync
+        public Task<ProjectionCoverageReport> BuildP5PointProjectionAsync(
+            IStepModel ifcModel,
+            double canvasWidth,
+            double canvasHeight,
+            double padding,
+            UserProjectionPlane? plane = null)
+            => CheckProjectionCoverageAsync(ifcModel, canvasWidth, canvasHeight, padding, plane);
+
+        // 進一步相容：無參數版本，回傳 SchematicData（僅節點）
+        // 作法：重算投影 + Fit-to-Canvas，建立三類元素的節點（無邊），並在 Metadata 中附上 Coverage 報表 JSON。
+        public async Task<SchematicData> BuildP5PointProjectionAsync(IStepModel ifcModel)
+        {
+            if (ifcModel == null) throw new ArgumentNullException(nameof(ifcModel));
+            // 預設畫布（與 ViewModel 常用值一致）
+            double canvasWidth = 1600, canvasHeight = 1000, padding = 40;
+
+            // 1) 收集三類元素
+            var all = new List<(IIfcProduct prod, string ifcType)>();
+            try { foreach (var x in ifcModel.Instances.OfType<IIfcPipeSegment>()) all.Add((x, x.ExpressType?.Name ?? "IfcPipeSegment")); } catch { }
+            try { foreach (var x in ifcModel.Instances.OfType<IIfcPipeFitting>()) all.Add((x, x.ExpressType?.Name ?? "IfcPipeFitting")); } catch { }
+            try { foreach (var x in ifcModel.Instances.OfType<IIfcFlowTerminal>()) all.Add((x, x.ExpressType?.Name ?? "IfcFlowTerminal")); } catch { }
+
+            var data = new SchematicData();
+            if (all.Count == 0)
+            {
+                data.SystemName = "P5: No elements";
+                return data;
+            }
+
+            // 2) 自動平面：最小跨度軸剔除
+            var sampleElems = all.Take(100).Select(t => (IIfcElement)t.prod).ToList();
+            var plane = BestAxisPlane(sampleElems);
+
+            // 3) 投影（未 fit）
+            static (double u, double v) Proj(Point3D pt, ProjectionPlane plane)
+                => plane switch
+                {
+                    ProjectionPlane.XZ => (pt.X, pt.Z),
+                    ProjectionPlane.YZ => (pt.Y, pt.Z),
+                    _ => (pt.X, pt.Y)
+                };
+
+            var uv = new List<(double u, double v, IIfcProduct prod, string ifcType, Point3D p3)>();
+            foreach (var it in all)
+            {
+                try
+                {
+                    var p3 = GetElementPoint(it.prod);
+                    var (u, v) = Proj(p3, plane);
+                    uv.Add((u, v, it.prod, it.ifcType, p3));
+                }
+                catch { }
+            }
+
+            if (uv.Count == 0) return data;
+
+            // 4) Fit-to-Canvas
+            double minU = uv.Min(t => t.u), maxU = uv.Max(t => t.u);
+            double minV = uv.Min(t => t.v), maxV = uv.Max(t => t.v);
+            double spanU = Math.Max(1e-9, maxU - minU);
+            double spanV = Math.Max(1e-9, maxV - minV);
+            double availW = Math.Max(1e-6, canvasWidth - 2 * padding);
+            double availH = Math.Max(1e-6, canvasHeight - 2 * padding);
+            double scale = Math.Min(availW / spanU, availH / spanV);
+            double offsetX = padding - minU * scale;
+            double offsetY = padding - minV * scale;
+
+            int inCount = 0, outCount = 0;
+            foreach (var t in uv)
+            {
+                double xC = offsetX + t.u * scale;
+                double yC = offsetY + t.v * scale;
+                bool inside = xC >= 0 && xC <= canvasWidth && yC >= 0 && yC <= canvasHeight;
+                if (inside) inCount++; else outCount++;
+
+                // 建立節點（以實體 Label 當 Id）
+                string id = ((t.prod as IPersistEntity)?.EntityLabel ?? 0).ToString();
+                string name = SafeName(t.prod as IIfcRoot);
+                var node = new SchematicNode
+                {
+                    Id = string.IsNullOrWhiteSpace(id) ? Guid.NewGuid().ToString() : id,
+                    Name = string.IsNullOrWhiteSpace(name) ? t.ifcType : name,
+                    IfcType = t.ifcType,
+                    Position3D = t.p3,
+                    Position2D = new System.Windows.Point(xC, yC),
+                    Entity = (t.prod as IPersistEntity) ?? default!
+                };
+                ClassifyNodeKind(node);
+                data.Nodes.Add(node);
+            }
+
+            // 5) Coverage 報表（放入 Metadata）
+            var report = await CheckProjectionCoverageAsync(ifcModel, canvasWidth, canvasHeight, padding,
+                plane: plane == ProjectionPlane.XY ? UserProjectionPlane.XY : (plane == ProjectionPlane.XZ ? UserProjectionPlane.XZ : UserProjectionPlane.YZ));
+            try { data.Metadata["ProjectionCoverage"] = System.Text.Json.JsonSerializer.Serialize(report); } catch { }
+            data.SystemName = $"P5 Points ({plane})";
+            return data;
+        }
+
+        /// <summary>
+        /// 檢查 IfcPipeSegment / IfcPipeFitting / IfcFlowTerminal 代表點的 3D→2D 投影是否能正常落在 Canvas 範圍內。
+        /// - 3D 點：使用元素的 LocalPlacement 世界原點（GetElementPoint）。
+        /// - 投影平面：可指定 XY/XZ/YZ；若未指定，使用最小跨度軸剔除（BestAxisPlane）。
+        /// - Fit-to-Canvas：將所有 2D 點以 padding 內縮後縮放至畫布；回傳每點 Canvas 座標與 InCanvas 標記。
+        /// </summary>
+        public Task<ProjectionCoverageReport> CheckProjectionCoverageAsync(IStepModel ifcModel, double canvasWidth, double canvasHeight, double padding, UserProjectionPlane? plane = null)
+        {
+            if (ifcModel == null) throw new ArgumentNullException(nameof(ifcModel));
+            if (canvasWidth <= 0 || canvasHeight <= 0) throw new ArgumentOutOfRangeException("Canvas size must be positive.");
+
+            return Task.Run(() =>
+            {
+                // 1) 收集三類元素與 3D 點
+                var all = new List<(IIfcProduct prod, string ifcType)>();
+                int nSeg = 0, nFit = 0, nTerm = 0;
+                try { foreach (var x in ifcModel.Instances.OfType<IIfcPipeSegment>()) { all.Add((x, x.ExpressType?.Name ?? "IfcPipeSegment")); nSeg++; } } catch { }
+                try { foreach (var x in ifcModel.Instances.OfType<IIfcPipeFitting>()) { all.Add((x, x.ExpressType?.Name ?? "IfcPipeFitting")); nFit++; } } catch { }
+                try { foreach (var x in ifcModel.Instances.OfType<IIfcFlowTerminal>()) { all.Add((x, x.ExpressType?.Name ?? "IfcFlowTerminal")); nTerm++; } } catch { }
+
+                if (all.Count == 0)
+                {
+                    return new ProjectionCoverageReport(
+                        CanvasWidth: canvasWidth,
+                        CanvasHeight: canvasHeight,
+                        Padding: padding,
+                        ProjectionPlane: (plane?.ToString() ?? "AUTO"),
+                        Total: 0,
+                        InCount: 0,
+                        OutCount: 0,
+                        Segments: nSeg,
+                        Fittings: nFit,
+                        Terminals: nTerm,
+                        Samples: Array.Empty<Element2DPoint>()
+                    );
+                }
+
+                // 2) 決定投影平面
+                ProjectionPlane p;
+                if (plane.HasValue)
+                {
+                    p = plane.Value switch
+                    {
+                        UserProjectionPlane.XZ => ProjectionPlane.XZ,
+                        UserProjectionPlane.YZ => ProjectionPlane.YZ,
+                        _ => ProjectionPlane.XY
+                    };
+                }
+                else
+                {
+                    // auto：取部分樣本決定最小跨度軸
+                    var sampleElems = all.Take(100).Select(t => (IIfcElement)t.prod).ToList();
+                    p = BestAxisPlane(sampleElems);
+                }
+
+                // 3) 投影到 2D（未 fit）
+                static (double u, double v) Proj(Point3D pt, ProjectionPlane plane)
+                    => plane switch
+                    {
+                        ProjectionPlane.XZ => (pt.X, pt.Z),
+                        ProjectionPlane.YZ => (pt.Y, pt.Z),
+                        _ => (pt.X, pt.Y)
+                    };
+
+                var uvList = new List<((double u, double v) uv, (IIfcProduct prod, string ifcType) src, Point3D p3)>();
+                foreach (var it in all)
+                {
+                    try
+                    {
+                        var p3 = GetElementPoint(it.prod);
+                        var uv = Proj(p3, p);
+                        uvList.Add((uv, it, p3));
+                    }
+                    catch { }
+                }
+
+                if (uvList.Count == 0)
+                {
+                    return new ProjectionCoverageReport(
+                        CanvasWidth: canvasWidth,
+                        CanvasHeight: canvasHeight,
+                        Padding: padding,
+                        ProjectionPlane: p.ToString(),
+                        Total: 0,
+                        InCount: 0,
+                        OutCount: 0,
+                        Segments: nSeg,
+                        Fittings: nFit,
+                        Terminals: nTerm,
+                        Samples: Array.Empty<Element2DPoint>()
+                    );
+                }
+
+                // 4) Fit-to-Canvas（padding 內縮）
+                double minU = uvList.Min(t => t.uv.u);
+                double maxU = uvList.Max(t => t.uv.u);
+                double minV = uvList.Min(t => t.uv.v);
+                double maxV = uvList.Max(t => t.uv.v);
+                double spanU = Math.Max(1e-9, maxU - minU);
+                double spanV = Math.Max(1e-9, maxV - minV);
+                double availW = Math.Max(1e-6, canvasWidth - 2 * padding);
+                double availH = Math.Max(1e-6, canvasHeight - 2 * padding);
+                double scale = Math.Min(availW / spanU, availH / spanV);
+                double offsetX = padding - minU * scale;
+                double offsetY = padding - minV * scale;
+
+                int inCount = 0, outCount = 0;
+                var sample = new List<Element2DPoint>();
+                foreach (var t in uvList)
+                {
+                    double xC = offsetX + t.uv.u * scale;
+                    double yC = offsetY + t.uv.v * scale;
+                    bool inside = xC >= 0 && xC <= canvasWidth && yC >= 0 && yC <= canvasHeight;
+                    if (inside) inCount++; else outCount++;
+
+                    // 只保留部分樣本（避免爆量）
+                    if (sample.Count < 200)
+                    {
+                        int lbl = 0; string? name = null;
+                        try { lbl = (t.src.prod as IPersistEntity)?.EntityLabel ?? 0; } catch { }
+                        try { name = IfcStringHelper.FromValue((t.src.prod as IIfcRoot)?.Name); } catch { }
+                        sample.Add(new Element2DPoint(
+                            Label: lbl,
+                            IfcType: t.src.ifcType,
+                            Name: name,
+                            X2D: t.uv.u,
+                            Y2D: t.uv.v,
+                            XCanvas: xC,
+                            YCanvas: yC,
+                            InCanvas: inside
+                        ));
+                    }
+                }
+
+                return new ProjectionCoverageReport(
+                    CanvasWidth: canvasWidth,
+                    CanvasHeight: canvasHeight,
+                    Padding: padding,
+                    ProjectionPlane: p.ToString(),
+                    Total: uvList.Count,
+                    InCount: inCount,
+                    OutCount: outCount,
+                    Segments: nSeg,
+                    Fittings: nFit,
+                    Terminals: nTerm,
+                    Samples: sample
+                );
+            });
         }
 
         // AS原理圖（精簡版）：
@@ -1396,15 +2486,13 @@ namespace IFC_Viewer_00.Services
                         pt3 = GetElementPoint(host);
                     else
                         pt3 = new Point3D(0, 0, 0);
-
-                    var uv = ProjectToPlane(pt3, origin, u, v);
                     var node = new SchematicNode
                     {
-                        Id = $"port:{(port as IPersistEntity)?.EntityLabel ?? ++idx}",
+                        Id = $"port:{(port as IPersistEntity)?.EntityLabel ?? (++idx)}",
                         Name = IfcStringHelper.FromValue((port as IIfcRoot)?.Name) ?? "Port",
                         IfcType = port?.ExpressType?.Name ?? "IfcPort",
                         Position3D = pt3,
-                        Position2D = new System.Windows.Point(uv.X, uv.Y),
+                        Position2D = new System.Windows.Point(pt3.X, pt3.Y),
                         Entity = (port as IPersistEntity) ?? default!
                     };
                     data.Nodes.Add(node);
@@ -1768,10 +2856,28 @@ namespace IFC_Viewer_00.Services
             {
                 var contained = port.ContainedIn;
                 if (contained == null) return null;
-                if (contained is IIfcRelConnectsPortToElement single)
-                    return single.RelatedElement as IIfcProduct;
-                if (contained is IEnumerable<IIfcRelConnectsPortToElement> many)
-                    return many.FirstOrDefault()?.RelatedElement as IIfcProduct;
+                // 嘗試直接 dynamic 取 RelatedElement（常見）與 RelatingElement（部分資料供應商）
+                try { return (contained as dynamic)?.RelatedElement as IIfcProduct; } catch { }
+                try { return (contained as dynamic)?.RelatingElement as IIfcProduct; } catch { }
+                // 若 ContainedIn 是集合（極少數情形），取第一筆能解析的
+                if (contained is System.Collections.IEnumerable many)
+                {
+                    foreach (var item in many)
+                    {
+                        try
+                        {
+                            var prod = (item as dynamic)?.RelatedElement as IIfcProduct;
+                            if (prod != null) return prod;
+                        }
+                        catch { }
+                        try
+                        {
+                            var prod = (item as dynamic)?.RelatingElement as IIfcProduct;
+                            if (prod != null) return prod;
+                        }
+                        catch { }
+                    }
+                }
             }
             catch { }
             return null;
@@ -1810,7 +2916,7 @@ namespace IFC_Viewer_00.Services
             var p3 = GetElementPoint(elem);
             var p2 = new Point(p3.X, p3.Y);
 
-            return new SchematicNode
+            var node = new SchematicNode
             {
                 Id = id,
                 Name = name,
@@ -1819,6 +2925,8 @@ namespace IFC_Viewer_00.Services
                 Position2D = p2,
                 Entity = elem as IPersistEntity ?? default!
             };
+            ClassifyNodeKind(node);
+            return node;
         }
 
         private static SchematicNode CreateNodeFromProduct(IIfcProduct prod)
@@ -1831,7 +2939,7 @@ namespace IFC_Viewer_00.Services
             var p3 = GetElementPoint(prod);
             var p2 = new Point(p3.X, p3.Y);
 
-            return new SchematicNode
+            var node = new SchematicNode
             {
                 Id = id,
                 Name = name,
@@ -1840,6 +2948,22 @@ namespace IFC_Viewer_00.Services
                 Position2D = p2,
                 Entity = prod as IPersistEntity ?? default!
             };
+            ClassifyNodeKind(node);
+            return node;
+        }
+
+        private static void ClassifyNodeKind(SchematicNode node)
+        {
+            try
+            {
+                var t = (node.IfcType ?? string.Empty).ToLowerInvariant();
+                if (t.Contains("flowterminal")) node.NodeKind = SchematicNode.SchematicNodeKind.Terminal;
+                else if (t.Contains("valve")) node.NodeKind = SchematicNode.SchematicNodeKind.Valve;
+                else if (t.Contains("flowfitting") || t.Contains("fitting")) node.NodeKind = SchematicNode.SchematicNodeKind.Fitting;
+                else if (t.Contains("pipesection") || t.Contains("pipesegment") || t.Contains("flowsegment") || t.Contains("pipesegment")) node.NodeKind = SchematicNode.SchematicNodeKind.PipeEnd; // PipeEnd 之後仍會細分為兩端點
+                else node.NodeKind = SchematicNode.SchematicNodeKind.Other;
+            }
+            catch { node.NodeKind = SchematicNode.SchematicNodeKind.Other; }
         }
 
         private static Point3D GetElementPoint(IIfcProduct prod)
@@ -1920,7 +3044,14 @@ namespace IFC_Viewer_00.Services
         // 改善：完整套用 IfcLocalPlacement 鏈的旋轉/平移，並套用 IfcExtrudedAreaSolid.Position 的座標軸與位置，
         //      將 ExtrudedDirection 正確轉換至世界座標，避免水平管誤畫成垂直線。
         // =============================================================
+        // 舊簽章：維持相容；內部轉呼叫含 options 版本
         public Task<SchematicData> GeneratePipeAxesAsync(IModel ifcModel, string plane, bool flipY = true)
+            => GeneratePipeAxesAsync(ifcModel, plane, flipY, null);
+
+        /// <summary>
+        /// 新版：支援 PipeAxesOptions（P4：IncludeFittings）。
+        /// </summary>
+        public Task<SchematicData> GeneratePipeAxesAsync(IModel ifcModel, string plane, bool flipY, PipeAxesOptions? options)
         {
             if (ifcModel == null) throw new ArgumentNullException(nameof(ifcModel));
             return Task.Run(() =>
@@ -2041,20 +3172,74 @@ namespace IFC_Viewer_00.Services
                     }
                 }
 
-                System.Diagnostics.Trace.WriteLine($"[Service][PipeAxes] Segments processed={segments.Count}, linesBuilt={segCount}, skipped={segSkipped}, plane={planeNorm}");
-                data.SystemName = $"PipeAxes({planeNorm})";
+                // (P4 S1) 追加：Fitting 節點（不影響既有 segment 邊）
+                try
+                {
+                    if (options?.IncludeFittings == true)
+                    {
+                        var fittings = ifcModel.Instances.OfType<IIfcPipeFitting>()?.ToList() ?? new List<IIfcPipeFitting>();
+                        int added = 0;
+                        foreach (var ft in fittings)
+                        {
+                            try
+                            {
+                                var p3 = GetElementPoint(ft);
+                                // 簡易重算 2D 投影（與前面一致）
+                                (double px, double py) projLocal(System.Windows.Media.Media3D.Point3D p)
+                                {
+                                    return planeNorm switch
+                                    {
+                                        "XZ" => (p.X, flipY ? -p.Z : p.Z),
+                                        "YZ" => (p.Y, flipY ? -p.Z : p.Z),
+                                        _ => (p.X, flipY ? -p.Y : p.Y),
+                                    };
+                                }
+                                var uv = projLocal(p3);
+                                string id = IfcStringHelper.FromValue((ft as IIfcRoot)?.GlobalId) ?? (ft as IPersistEntity)?.EntityLabel.ToString() ?? Guid.NewGuid().ToString();
+                                string name = IfcStringHelper.FromValue((ft as IIfcRoot)?.Name) ?? "PipeFitting";
+                                var node = new SchematicNode
+                                {
+                                    Id = id,
+                                    Name = name,
+                                    IfcType = ft.ExpressType?.Name ?? "IfcPipeFitting",
+                                    Position3D = p3,
+                                    Position2D = new System.Windows.Point(uv.px, uv.py),
+                                    Entity = ft as IPersistEntity ?? default!
+                                };
+                                // 系統資訊後援（保留與 segment 一致策略）
+                                string? sn = null, sa = null, st = null;
+                                PopulateSystemFromPsets(ft as IIfcProduct, ref sn, ref sa, ref st);
+                                node.SystemName = sn; node.SystemAbbreviation = sa; node.SystemType = st;
+                                data.Nodes.Add(node);
+                                added++;
+                            }
+                            catch { }
+                        }
+                        try { System.Diagnostics.Trace.WriteLine($"[Service][PipeAxes][P4] Fittings added={added}"); } catch { }
+                    }
+                }
+                catch { }
+
+                System.Diagnostics.Trace.WriteLine($"[Service][PipeAxes] Segments processed={segments.Count}, linesBuilt={segCount}, skipped={segSkipped}, plane={planeNorm}, fittings={(options?.IncludeFittings == true ? "on" : "off")}");
+                data.SystemName = $"PipeAxes({planeNorm})" + (options?.IncludeFittings == true ? "+Fittings" : "");
                 // 樓層資訊
                 try { PopulateLevels(ifcModel, data); } catch { }
                 return data;
             });
         }
 
-        // 綜合版：管段軸線 + FlowTerminal 紅點（同一投影平面）
-        public async Task<SchematicData> GeneratePipeAxesWithTerminalsAsync(IModel ifcModel, string plane, bool flipY = true)
+        // 舊簽章保留（相容）：不帶 options
+        public Task<SchematicData> GeneratePipeAxesWithTerminalsAsync(IModel ifcModel, string plane, bool flipY = true)
+            => GeneratePipeAxesWithTerminalsAsync(ifcModel, plane, flipY, null);
+
+        /// <summary>
+        /// 新版：支援 PipeAxesOptions（IncludeFittings 會透過下層生成一併處理；IncludeTerminals 控制是否加終端節點）。
+        /// </summary>
+        public async Task<SchematicData> GeneratePipeAxesWithTerminalsAsync(IModel ifcModel, string plane, bool flipY, PipeAxesOptions? options)
         {
             if (ifcModel == null) throw new ArgumentNullException(nameof(ifcModel));
-            // 先建出管段軸線資料
-            var data = await GeneratePipeAxesAsync(ifcModel, plane, flipY);
+            // 先建出管段軸線資料（含可能的 fittings）
+            var data = await GeneratePipeAxesAsync(ifcModel, plane, flipY, options);
 
             // 收集 Terminal 3D 定位點
             var termPts = await GetFlowTerminalAnchorsAsync(ifcModel);
@@ -2071,43 +3256,46 @@ namespace IFC_Viewer_00.Services
                 }
             }
 
-            for (int i = 0; i < termPts.Count; i++)
+            if (options?.IncludeTerminals != false) // 預設 true
             {
-                var p3 = termPts[i];
-                var uv = proj(p3);
-                var d = (i < termDetails.Count) ? termDetails[i] : null;
-                var n = new SchematicNode
+                for (int i = 0; i < termPts.Count; i++)
                 {
-                    Id = d?.TerminalLabel != null ? $"term:{d.TerminalLabel}" : $"term:{i}",
-                    Name = d?.TerminalName ?? $"Terminal-{i}",
-                    IfcType = "IfcFlowTerminal",
-                    Position3D = p3,
-                    Position2D = new System.Windows.Point(uv.px, uv.py),
-                    HostIfcType = "IfcFlowTerminal",
-                    HostLabel = d?.TerminalLabel
-                };
-                // 嘗試掛回實體（若能取得）
-                try
-                {
-                    if (d?.TerminalLabel is int lbl && lbl != 0)
+                    var p3 = termPts[i];
+                    var uv = proj(p3);
+                    var d = (i < termDetails.Count) ? termDetails[i] : null;
+                    var n = new SchematicNode
                     {
-                        var pe = ifcModel.Instances[lbl] as IPersistEntity;
-                        if (pe != null) n.Entity = pe;
-                        if (pe is IIfcProduct prod)
+                        Id = d?.TerminalLabel != null ? $"term:{d.TerminalLabel}" : $"term:{i}",
+                        Name = d?.TerminalName ?? $"Terminal-{i}",
+                        IfcType = "IfcFlowTerminal",
+                        Position3D = p3,
+                        Position2D = new System.Windows.Point(uv.px, uv.py),
+                        HostIfcType = "IfcFlowTerminal",
+                        HostLabel = d?.TerminalLabel
+                    };
+                    // 嘗試掛回實體（若能取得）
+                    try
+                    {
+                        if (d?.TerminalLabel is int lbl && lbl != 0)
                         {
-                            n.LevelName = GetLevelNameForProduct(ifcModel, prod);
-                            // Pset 後援：終端的系統資訊
-                            string? sn = null, sa = null, st = null;
-                            PopulateSystemFromPsets(prod, ref sn, ref sa, ref st);
-                            n.SystemName = sn; n.SystemAbbreviation = sa; n.SystemType = st;
+                            var pe = ifcModel.Instances[lbl] as IPersistEntity;
+                            if (pe != null) n.Entity = pe;
+                            if (pe is IIfcProduct prod)
+                            {
+                                n.LevelName = GetLevelNameForProduct(ifcModel, prod);
+                                // Pset 後援：終端的系統資訊
+                                string? sn = null, sa = null, st = null;
+                                PopulateSystemFromPsets(prod, ref sn, ref sa, ref st);
+                                n.SystemName = sn; n.SystemAbbreviation = sa; n.SystemType = st;
+                            }
                         }
                     }
+                    catch { }
+                    data.Nodes.Add(n);
                 }
-                catch { }
-                data.Nodes.Add(n);
             }
 
-            data.SystemName = $"PipeAxes+Terminals({(plane ?? "XY").Trim().ToUpperInvariant()})";
+            data.SystemName = $"PipeAxes+Terminals({(plane ?? "XY").Trim().ToUpperInvariant()})" + (options?.IncludeFittings == true ? "+Fittings" : "");
             return data;
         }
 

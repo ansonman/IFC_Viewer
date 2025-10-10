@@ -2,6 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="clr-namespace:IFC_Viewer_00.Converters"
+    xmlns:models="clr-namespace:IFC_Viewer_00.Models"
     Title="原理圖" Height="600" Width="900"
     UseLayoutRounding="True"
     SnapsToDevicePixels="True">
@@ -11,6 +12,8 @@
     <conv:CenterOnPointConverter x:Key="CenterOnPoint"/>
     <conv:HalfNegativeConverter x:Key="HalfNeg"/>
     <conv:CenterOffsetWithScaleConverter x:Key="CenterOffsetWithScale"/>
+        <conv:EnumDisplayConverter x:Key="EnumDisplay"/>
+        <conv:BooleanToVisibilityConverter x:Key="BoolVis"/>
     </Window.Resources>
     <Grid>
         <Grid.RowDefinitions>
@@ -23,14 +26,17 @@
             <ColumnDefinition Width="340"/>
         </Grid.ColumnDefinitions>
 
-        <StackPanel Orientation="Horizontal" Margin="8" Grid.Row="0">
+        <!-- 工具列改為垂直堆疊：第一行一般控制，第二行 Run 分組控制 -->
+        <StackPanel Orientation="Vertical" Margin="8" Grid.Row="0">
+            <!-- 第一行：統計、視圖/層控制、系統過濾、色彩設定等 -->
+            <StackPanel Orientation="Horizontal">
             <TextBlock Text="節點: " VerticalAlignment="Center"/>
             <TextBlock Text="{Binding Nodes.Count}" FontWeight="Bold" Margin="4,0" VerticalAlignment="Center"/>
             <TextBlock Text="邊: " Margin="16,0,0,0" VerticalAlignment="Center"/>
             <TextBlock Text="{Binding Edges.Count}" FontWeight="Bold" Margin="4,0" VerticalAlignment="Center"/>
             <Button Content="重置視圖" Margin="16,0,0,0" Padding="8,2" Click="ResetView_Click"/>
-            <Button Content="重新布局" Margin="8,0,0,0" Padding="8,2" Click="Relayout_Click"/>
             <Button Content="存成 PNG" Margin="8,0,0,0" Padding="8,2" Click="SavePng_Click"/>
+            <Button Content="建構管網(Quick)" Margin="8,0,0,0" Padding="8,2" Command="{Binding BuildPipeNetworkCommand}" ToolTip="根據 System + Ports + 幾何 + Fitting 生成快速管網"/>
             <Separator Margin="8,0"/>
             <Button Content="點 +" Margin="0,0,4,0" Padding="8,2" Command="{Binding IncreaseNodeSizeCommand}"/>
             <Button Content="點 -" Margin="0,0,8,0" Padding="8,2" Command="{Binding DecreaseNodeSizeCommand}"/>
@@ -47,6 +53,12 @@
                 <CheckBox Content="標籤" Margin="4,0" IsChecked="{Binding ShowLabels}"/>
                 <CheckBox Content="管徑" Margin="4,0" IsChecked="{Binding ShowPipeSizeTags}"/>
                 <CheckBox Content="短邊隱藏管徑" Margin="4,0" IsChecked="{Binding AutoHideShortPipeSizeLabels}"/>
+                <CheckBox Content="穿越配件連線" Margin="12,0,0,0" IsChecked="{Binding ThroughFittingRewireEnabled}"
+                          ToolTip="啟用：對度數為2的配件（例：elbow）在兩端節點之間新增推論邊，簡化連線圖。"/>
+                <CheckBox Content="標示 Rewired 端點" Margin="12,0,0,0" IsChecked="{Binding ShowRewiredEndpoints}"
+                          ToolTip="診斷用途：在虛線（Rewired）兩端加上小標記以確認投影座標"/>
+                <CheckBox Content="只顯示 Rewired" Margin="12,0,0,0" IsChecked="{Binding ShowOnlyRewired}"
+                          ToolTip="僅顯示 Rewired 虛線與其端點，便於專注審閱穿越配件連線"/>
                 <TextBlock Text="閾值(px):" Margin="8,0,4,0" VerticalAlignment="Center"/>
                 <TextBox Width="58" Height="22" VerticalAlignment="Center"
                          Text="{Binding ShortPipeLabelMinLengthPx, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
@@ -55,6 +67,7 @@
                 <TextBox Width="58" Height="22" VerticalAlignment="Center"
                          Text="{Binding TagScale, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                          ToolTip="管徑標籤縮放倍率（0.1~5.0）"/>
+                <Button Content="Rewired 邊列表→Logs" Margin="12,0,0,0" Padding="8,2" Command="{Binding DumpRewiredEdgesCommand}"/>
             </StackPanel>
 
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="8,0,0,0">
@@ -80,11 +93,70 @@
                     <Button Content="選色…" Padding="6,2" Margin="4,0,0,0" Click="PickPipeNodeColor_Click"/>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" Margin="12,0" VerticalAlignment="Center">
+                    <Rectangle Width="14" Height="14" Fill="#3399CC" Stroke="#333" StrokeThickness="0.5" RadiusX="2" RadiusY="2"/>
+                    <TextBlock Text=" Fitting" Margin="4,0,8,0" VerticalAlignment="Center"/>
+                    <StackPanel.Visibility>
+                        <Binding Path="HasFittingNodes" Converter="{StaticResource BoolVis}"/>
+                    </StackPanel.Visibility>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="12,0" VerticalAlignment="Center">
+                    <Rectangle Width="14" Height="14" Fill="DarkGoldenrod" Stroke="#333" StrokeThickness="0.5" RadiusX="2" RadiusY="2"/>
+                    <TextBlock Text=" Valve" Margin="4,0,8,0" VerticalAlignment="Center"/>
+                    <StackPanel.Visibility>
+                        <Binding Path="HasValveNodes" Converter="{StaticResource BoolVis}"/>
+                    </StackPanel.Visibility>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="12,0" VerticalAlignment="Center">
                     <Rectangle Width="24" Height="4" Fill="{Binding PipeEdgeBrush}" Stroke="#333" StrokeThickness="0.5"/>
                     <TextBlock Text=" Pipe 線" Margin="4,0,8,0" VerticalAlignment="Center"/>
                     <Button Content="換色" Padding="6,2" Command="{Binding CyclePipeEdgeColorCommand}"/>
                     <Button Content="選色…" Padding="6,2" Margin="4,0,0,0" Click="PickPipeEdgeColor_Click"/>
                 </StackPanel>
+            </StackPanel>
+            </StackPanel>
+
+            <!-- 第二行：Run 分組模式說明 -->
+            <TextBlock Text="{Binding RunGroupingModeDescription}" Margin="0,6,0,0" FontSize="11" Foreground="#666"/>
+            <!-- 第三行：Run 分組控制 -->
+            <StackPanel Orientation="Horizontal" Margin="0,4,0,0" VerticalAlignment="Center">
+                <CheckBox Content="跨樓層合併(A)" Margin="4,0" IsChecked="{Binding MergeAcrossLevels}"/>
+                <TextBlock Text="幾何容差(px):" Margin="8,0,4,0" VerticalAlignment="Center"/>
+                <TextBox Width="60" Height="22" Text="{Binding GeometryTolerancePx, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                <Button Content="Run 分組" Margin="8,0,0,0" Padding="8,2" Command="{Binding ComputeRunsCommand}"/>
+                <CheckBox Content="Run 著色" Margin="12,0,0,0" IsChecked="{Binding ColorByRunId}"/>
+                <ComboBox Width="100" Margin="8,0,0,0" ToolTip="圖例排序"
+                          SelectedIndex="{Binding RunLegendSort, Mode=TwoWay, Converter={StaticResource EnumDisplay}}">
+                    <ComboBoxItem Content="RunId 升序"/>
+                    <ComboBoxItem Content="數量 降序"/>
+                </ComboBox>
+                <StackPanel Orientation="Horizontal" Margin="8,0,0,0" VerticalAlignment="Center">
+                    <Button Content="⟨" Width="24" Command="{Binding RunLegendPrevPageCommand}"/>
+                    <TextBlock Text=" "/>
+                    <TextBlock Text="{Binding RunLegendPage}"/>
+                    <TextBlock Text="/"/>
+                    <TextBlock Text="{Binding RunLegendTotalPages}"/>
+                    <Button Content="⟩" Width="24" Margin="4,0,0,0" Command="{Binding RunLegendNextPageCommand}"/>
+                    <TextBlock Text=" 每頁:" Margin="6,0,0,0"/>
+                    <TextBox Width="40" Height="22" Text="{Binding RunLegendPageSize, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                    <TextBlock Text="  共:" Margin="6,0,0,0"/>
+                    <TextBlock Text="{Binding RunLegendTotalItems}"/>
+                </StackPanel>
+                <Button Content="匯出 CSV" Margin="8,0,0,0" Padding="8,2" Command="{Binding ExportRunsToCsvCommand}"/>
+                <ItemsControl ItemsSource="{Binding RunLegendView}" Margin="12,0,0,0">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <StackPanel Orientation="Horizontal"/>
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel Orientation="Horizontal" Margin="4,0">
+                                <Rectangle Width="18" Height="4" Fill="{Binding Color}" Stroke="#333" StrokeThickness="0.5"/>
+                                <TextBlock Text="{Binding Label}" Margin="4,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
             </StackPanel>
         </StackPanel>
 
@@ -178,6 +250,12 @@
                                         <Setter Property="Stroke" Value="{Binding EdgeBrush}"/>
                                         <Setter Property="StrokeThickness" Value="{Binding Thickness}"/>
                                         <Style.Triggers>
+                                            <!-- Rewired 的邊以虛線、加粗且高對比色以便辨識 -->
+                                            <DataTrigger Binding="{Binding Edge.Origin}" Value="{x:Static models:SchematicEdge+EdgeOriginKind.Rewired}">
+                                                <Setter Property="StrokeDashArray" Value="6,3"/>
+                                                <Setter Property="StrokeThickness" Value="2.5"/>
+                                                <Setter Property="Stroke" Value="DodgerBlue"/>
+                                            </DataTrigger>
                                             <DataTrigger Binding="{Binding Visible}" Value="False">
                                                 <Setter Property="UIElement.Visibility" Value="Collapsed"/>
                                             </DataTrigger>
@@ -302,6 +380,11 @@
                                             <TextBlock Text="{Binding Node.Id}" FontSize="10"/>
                                             <TextBlock Text="{Binding Node.HostIfcType, StringFormat=Host: {0}}" FontSize="10"/>
                                             <TextBlock Text="{Binding Node.IsFromPipeSegment, StringFormat=PipeSegment端點: {0}}" FontSize="10"/>
+                                            <TextBlock Text="{Binding Node.IfcType, StringFormat=分類: {0}}" FontSize="10"/>
+                                            <TextBlock Text="{Binding Node.SystemKey, StringFormat=System: {0}}" FontSize="10"/>
+                                            <TextBlock Text="{Binding Node.RunId, StringFormat=Run: {0}}" FontSize="10"/>
+                                            <TextBlock Text="{Binding Node.NodeKind, StringFormat=Kind: {0}}" FontSize="10"/>
+                                            <TextBlock Text="{Binding Node.Edges.Count, StringFormat=Degree: {0}}" FontSize="10"/>
                                         </StackPanel>
                                     </Ellipse.ToolTip>
                                     <Ellipse.Style>
@@ -326,6 +409,99 @@
                             </Grid>
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <!-- Rewired 端點診斷標記疊加層（放在 Canvas 內疊加） -->
+                <ItemsControl ItemsSource="{Binding Edges}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <Canvas/>
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemContainerStyle>
+                    <Style TargetType="ContentPresenter">
+                        <Setter Property="Canvas.Left" Value="0"/>
+                        <Setter Property="Canvas.Top" Value="0"/>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding DataContext.ShowRewiredEndpoints, RelativeSource={RelativeSource AncestorType=Window}}" Value="False">
+                                <Setter Property="UIElement.Visibility" Value="Collapsed"/>
+                            </DataTrigger>
+                            <MultiDataTrigger>
+                                <MultiDataTrigger.Conditions>
+                                    <Condition Binding="{Binding Edge.Origin}" Value="{x:Static models:SchematicEdge+EdgeOriginKind.Rewired}"/>
+                                    <Condition Binding="{Binding Visible}" Value="True"/>
+                                </MultiDataTrigger.Conditions>
+                                <Setter Property="UIElement.Visibility" Value="Visible"/>
+                            </MultiDataTrigger>
+                            <MultiDataTrigger>
+                                <MultiDataTrigger.Conditions>
+                                    <Condition Binding="{Binding Edge.Origin}" Value="{x:Static models:SchematicEdge+EdgeOriginKind.Rewired}"/>
+                                    <Condition Binding="{Binding Visible}" Value="False"/>
+                                </MultiDataTrigger.Conditions>
+                                <Setter Property="UIElement.Visibility" Value="Collapsed"/>
+                            </MultiDataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </ItemsControl.ItemContainerStyle>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Canvas>
+                            <!-- 起點標記（以中心座標繪製，RenderTransform 向左上平移半徑） -->
+                            <Ellipse Width="6" Height="6" Fill="DodgerBlue" Stroke="White" StrokeThickness="1"
+                                     Canvas.Left="{Binding Start.X}"
+                                     Canvas.Top="{Binding Start.Y}">
+                                <Ellipse.RenderTransform>
+                                    <TranslateTransform X="-3" Y="-3"/>
+                                </Ellipse.RenderTransform>
+                                <Ellipse.ToolTip>
+                                    <StackPanel>
+                                        <TextBlock Text="Rewired 端點 (Start)" FontWeight="Bold"/>
+                                        <TextBlock Text="{Binding Start.Node.Name}" FontWeight="Bold"/>
+                                        <TextBlock Text="{Binding Start.Node.Id}" FontSize="10"/>
+                                        <TextBlock Text="{Binding Start.Node.HostIfcType, StringFormat=Host: {0}}" FontSize="10"/>
+                                        <TextBlock Text="{Binding Start.Node.IsFromPipeSegment, StringFormat=PipeSegment端點: {0}}" FontSize="10"/>
+                                        <TextBlock Text="{Binding Start.Node.IfcType, StringFormat=分類: {0}}" FontSize="10"/>
+                                        <TextBlock Text="{Binding Start.Node.SystemKey, StringFormat=System: {0}}" FontSize="10"/>
+                                        <TextBlock Text="{Binding Start.Node.RunId, StringFormat=Run: {0}}" FontSize="10"/>
+                                        <TextBlock Text="{Binding Start.Node.NodeKind, StringFormat=Kind: {0}}" FontSize="10"/>
+                                        <TextBlock Text="{Binding Start.Node.Edges.Count, StringFormat=Degree: {0}}" FontSize="10"/>
+                                    </StackPanel>
+                                </Ellipse.ToolTip>
+                                <Ellipse.InputBindings>
+                                    <MouseBinding MouseAction="LeftClick"
+                                                  Command="{Binding DataContext.NodeClickCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                  CommandParameter="{Binding Start}"/>
+                                </Ellipse.InputBindings>
+                            </Ellipse>
+                            <!-- 終點標記（同上） -->
+                            <Ellipse Width="6" Height="6" Fill="DodgerBlue" Stroke="White" StrokeThickness="1"
+                                     Canvas.Left="{Binding End.X}"
+                                     Canvas.Top="{Binding End.Y}">
+                                <Ellipse.RenderTransform>
+                                    <TranslateTransform X="-3" Y="-3"/>
+                                </Ellipse.RenderTransform>
+                                <Ellipse.ToolTip>
+                                    <StackPanel>
+                                        <TextBlock Text="Rewired 端點 (End)" FontWeight="Bold"/>
+                                        <TextBlock Text="{Binding End.Node.Name}" FontWeight="Bold"/>
+                                        <TextBlock Text="{Binding End.Node.Id}" FontSize="10"/>
+                                        <TextBlock Text="{Binding End.Node.HostIfcType, StringFormat=Host: {0}}" FontSize="10"/>
+                                        <TextBlock Text="{Binding End.Node.IsFromPipeSegment, StringFormat=PipeSegment端點: {0}}" FontSize="10"/>
+                                        <TextBlock Text="{Binding End.Node.IfcType, StringFormat=分類: {0}}" FontSize="10"/>
+                                        <TextBlock Text="{Binding End.Node.SystemKey, StringFormat=System: {0}}" FontSize="10"/>
+                                        <TextBlock Text="{Binding End.Node.RunId, StringFormat=Run: {0}}" FontSize="10"/>
+                                        <TextBlock Text="{Binding End.Node.NodeKind, StringFormat=Kind: {0}}" FontSize="10"/>
+                                        <TextBlock Text="{Binding End.Node.Edges.Count, StringFormat=Degree: {0}}" FontSize="10"/>
+                                    </StackPanel>
+                                </Ellipse.ToolTip>
+                                <Ellipse.InputBindings>
+                                    <MouseBinding MouseAction="LeftClick"
+                                                  Command="{Binding DataContext.NodeClickCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                  CommandParameter="{Binding End}"/>
+                                </Ellipse.InputBindings>
+                            </Ellipse>
+                        </Canvas>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
                 </ItemsControl>
             </Canvas>
     </ScrollViewer>

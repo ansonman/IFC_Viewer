@@ -83,6 +83,33 @@
   - Schematic 邊線繪製：`SchematicView.xaml` 使用第二個 `ItemsControl` 以 `<Line>` 呈現，座標綁定 EdgeView 上的起迄節點座標（`Start.X/Start.Y` 與 `End.X/End.Y`），確保與節點視圖座標一致；`Stroke="Black"`、`StrokeThickness="1.5"`，並置於節點下方分層顯示。
   - 當 `Edges.Count == 0` 時顯示提示 Banner：「模型未含 IfcRelConnectsPorts 連線，僅顯示節點。」
 
+### Run 分組、著色與匯出（2025-10）
+- 目的：依使用者領域規則將管段邊線分成「Run」群組，利於跨樓層或分層檢視與統計。
+- 規則（固定）：
+  - 分組鍵：系統縮寫（無則系統名稱）＋ 尺寸（優先 DN，其次 ØODmm，無尺寸則歸為「-」）
+  - 幾何相連：在 2D 畫布上，以像素容差合併端點；同一連通元件視為同一 Run
+  - 模式：
+    - A=跨樓層合併（預設）：不區分樓層，僅按系統＋尺寸＋幾何相連分組
+    - B=按樓層分組：在上述基礎上再以樓層名稱切分
+- UI 操作：
+  - 工具列「跨樓層合併(A)」：切換 A/B 模式（對應設定值 MergeMode）
+  - 「幾何容差(px)」：預設 10；改變後可按「Run 分組」重算
+  - 「Run 分組」：依當前模式/容差重建 RunId；RunId 會寫回每條邊（`SchematicEdge.RunId`）
+  - 「Run 著色」：以 RunId 套用色盤並顯示圖例；關閉時恢復 Pipe 線的單一顏色
+  - 圖例排序/分頁：
+    - 排序：RunId 升序 或 數量(Count) 降序
+    - 分頁：可調每頁數量與上一頁/下一頁；顯示目前頁碼與總頁數、總項目數
+  - 「匯出 CSV」：輸出每個 Run 的統計列：RunId,System,Size,Floors,Length,Count
+    - Floors 以「/」串接（依字母序）
+    - Length 以 3D 端點距離加總（單位：模型座標單位，常見為 mm 或 m；請依模型實際含義解讀）
+- 預設值（可於設定檔持久化）：
+  - 幾何容差 GeometryTolerancePx = 10 像素
+  - 合併模式 MergeMode = A（跨樓層合併）
+  - 系統過濾預設勾選：SWP、VP、WP
+  - Run 著色 ColorByRunId：預設關閉
+
+提示：Run 圖例會隨重新分組或系統過濾而更新；若 Run 著色已開啟，變動後會自動套色並刷新圖例。
+
 ### 視圖互動與視角控制
 - 縮放/平移：
   - 滑鼠滾輪縮放（以游標為中心）；按住滑鼠中鍵拖曳以平移。
@@ -105,6 +132,8 @@
 - 限制：
   - 當管徑資料缺失（DN/OD 皆無）時，不顯示標籤。
   - 若邊被系統過濾隱藏或圖層關閉，標籤亦會隱藏。
+  - 可勾選「短邊隱藏管徑」，並輸入像素閾值（預設 40px），短於此閾值的邊不顯示尺寸標籤。
+  - 標籤倍率 TagScale（0.1~5.0）可手動調整，與視圖縮放無關。
 
 ### AS 原理圖流程（兩段 IfcPipeSegment）
 - 目的：以兩段參考管件推導投影平面，將系統 Ports 投影成 2D 黑點，並用黑線連接具有 `IfcRelConnectsPorts` 的 Port 對。
@@ -119,6 +148,18 @@
   3) 視圖自動 Fit-to-Canvas（800x600、padding 20），可使用滑鼠滾輪縮放與中鍵平移；「重置視圖」與「重新布局」同樣可用。
 - 疑難排解：
   - 完全沒有黑點：檢查 AssignsToGroup/HasPorts 是否為空；本流程仍會回退到「全模型 Ports」以保底。
+
+#### Elbow/配件：使用 IfcDistributionPort 投影與「穿越配件連線」
+- 投影：任何 IfcDistributionPort 都能投影到 2D Canvas（優先使用 Port 的 ObjectPlacement；缺少時退回宿主元素位置）。
+- 既有 Ports-only 連線：預設只畫「fitting 的每個 Port ↔ 相鄰元素（通常是管段）的 Port」。
+- 可選的「穿越配件連線」：
+  - 啟用後，對度數=2 的 IfcPipeFitting（多為 elbow），會在「兩端相鄰節點」之間加一條推導邊（Origin=Rewired），視覺上等同一段連續 segment 穿越 elbow。
+  - 限制與建議：
+    - 僅對度數=2 的配件生效；Tee/Cross（3/4 孔）不會兩兩相連，避免多餘線，建議維持 star 連線呈現。
+    - 需模型有 Ports；缺 Ports 的模型不啟用此連線（語義不明確）。
+    - 若同一對節點已存在邊（例如原本就有 segment 邊），不會重複新增。
+  - UI：Schematic 視窗工具列提供「穿越配件連線」勾選框（同步 `SchematicService.ThroughFittingRewireEnabled`）。切換會立即重建管網；預設關閉。
+  - 視覺：推論邊（Origin=Rewired）以虛線、較細呈現；被選取時仍以橘紅色粗線顯示。
 
 ### AS 原理圖 V1：手動平面 + 全系統 Ports 點雲（2025-09-24）
 - 目的：快速以人工指定平面檢視一或多個系統的全部 Port 分佈與資料品質（不畫邊線，專注診斷與來源追蹤）。
@@ -174,6 +215,33 @@ $env:IFC_STARTUP_FILE='j:\AI_Project\IFC_Viewer_00\Project1.ifc'; dotnet run --p
   - 勾選「可見性」會遞迴影響子節點，並更新 3D 的 Hidden 清單
   - 取消可見性不會刪除節點，只是從 3D 呈現中暫時隱藏
 
+### PSC P4 Quick 管網與 Ports-only 流程差異（補充）
+在 **PSC P4 (Quick)** 管網建構流程裡，Pipe Segment 的 A/B 端點節點不是由 IFC `IfcDistributionPort` 直接產生，而是：
+
+1. 先建立 PipeSegment 的中心節點。
+2. 依 `MergeToleranceMm` 生成一對虛擬端點 `_A` / `_B`（目前採單軸 ±half 偏移，可後續以實際幾何方向替換）。
+3. 建立一條 `SegmentEdge`（Origin=Segment, Length=虛擬長度, 若能抽取直徑則附加）。
+
+因此：
+- 這些端點不是 Port 映射 => 模型即使缺 Ports 仍有骨架。
+- 後續 Ports 邊 / 幾何補橋 / Fitting Star Rewire 會再補充拓樸；端點存在不代表 IFC 有對應 Port。
+
+與「Ports-only SOP」差異：
+| 項目 | Ports-only | PSC P4 Quick |
+|------|------------|--------------|
+| Segment 端點 | 不產生（無 Ports 則缺線） | 虛擬 A/B 端點一律建立 (可日後加條件) |
+| 邊來源 | 只用 IfcRelConnectsPorts | Ports + 幾何補橋 + Fitting rewire + SegmentEdge |
+| Fitting 穿透 | 無 | Star 連線 + (a,fitting,b) 重寫 |
+| 系統補標註 | 僅直接指派 | 加鄰接傳播 (PropagateSystemFromNeighbors) |
+
+可選後續優化：
+- 只有在該 Segment 沒找到任何 Ports 時才拆 A/B。
+- 依幾何方向向量計算真實兩端點而非固定 ±half。
+- 若存在兩個最近 Ports，將 A/B 對齊 Ports 位置，提高語義一致性。
+
+報表欄位對應：`ConvertedSegments`, `EndpointNodes`, `SegmentEdges` 表示拆分成效；`PropagatedSystemAssignments` 表示鄰接補標註的節點數。
+
+---
 ## 診斷日誌與疑難排解
 - 啟動後會輸出 `viewer3d.log`（位於 Debug 輸出目錄）。
 - 右鍵操作將新增詳細 Trace，例如：

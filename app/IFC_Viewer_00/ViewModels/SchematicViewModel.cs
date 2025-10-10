@@ -18,6 +18,18 @@ namespace IFC_Viewer_00.ViewModels
 {
     public partial class SchematicViewModel : INotifyPropertyChanged
     {
+        // 新增：供快速管網建構使用的目前模型引用
+    public Xbim.Common.IModel? CurrentModel { get; set; }
+
+        // 簡化：若原本另一 partial 已實作，請整合；此處提供 fallback 以免編譯錯誤
+        private void LoadSchematicData(SchematicData data)
+        {
+            // 若已有正式實作，刪除此暫存；否則最少更新集合供 UI 繫結
+            Nodes.Clear();
+            foreach (var n in data.Nodes) Nodes.Add(new SchematicNodeView { Node = n });
+            Edges.Clear();
+            foreach (var e in data.Edges) Edges.Add(new SchematicEdgeView { Edge = e });
+        }
         private readonly SchematicService _service;
 
         public ObservableCollection<SchematicNodeView> Nodes { get; } = new();
@@ -27,9 +39,77 @@ namespace IFC_Viewer_00.ViewModels
     public ObservableCollection<SystemFilterOption> Systems { get; } = new();
         // V1: 日誌文字顯示
         public ObservableCollection<string> Logs { get; } = new();
+        // 2D 後處理參數（畫布像素）
+        private bool _hideTinyStubs = true;
+        public bool HideTinyStubs
+        {
+            get => _hideTinyStubs;
+            set { if (_hideTinyStubs != value) { _hideTinyStubs = value; OnPropertyChanged(nameof(HideTinyStubs)); SaveColorsToDisk(); } }
+        }
+
+        private double _minSegmentScreenLengthPx = 4.0; // 小於此長度視為短邊段
+        public double MinSegmentScreenLengthPx
+        {
+            get => _minSegmentScreenLengthPx;
+            set
+            {
+                double v = double.IsNaN(value) || double.IsInfinity(value) ? _minSegmentScreenLengthPx : Math.Clamp(value, 0.0, 100.0);
+                if (Math.Abs(_minSegmentScreenLengthPx - v) > double.Epsilon)
+                { _minSegmentScreenLengthPx = v; OnPropertyChanged(nameof(MinSegmentScreenLengthPx)); SaveColorsToDisk(); }
+            }
+        }
+
+        private double _nodeMergeScreenDistancePx = 6.0; // 兩節點距離小於此值時合併座標
+        public double NodeMergeScreenDistancePx
+        {
+            get => _nodeMergeScreenDistancePx;
+            set
+            {
+                double v = double.IsNaN(value) || double.IsInfinity(value) ? _nodeMergeScreenDistancePx : Math.Clamp(value, 0.0, 100.0);
+                if (Math.Abs(_nodeMergeScreenDistancePx - v) > double.Epsilon)
+                { _nodeMergeScreenDistancePx = v; OnPropertyChanged(nameof(NodeMergeScreenDistancePx)); SaveColorsToDisk(); }
+            }
+        }
+
+        private double _endpointSnapDistancePx = 5.0; // 邊端點與鄰近節點距離小於此值時吸附
+        public double EndpointSnapDistancePx
+        {
+            get => _endpointSnapDistancePx;
+            set
+            {
+                double v = double.IsNaN(value) || double.IsInfinity(value) ? _endpointSnapDistancePx : Math.Clamp(value, 0.0, 100.0);
+                if (Math.Abs(_endpointSnapDistancePx - v) > double.Epsilon)
+                { _endpointSnapDistancePx = v; OnPropertyChanged(nameof(EndpointSnapDistancePx)); SaveColorsToDisk(); }
+            }
+        }
         // 右側屬性面板：選取與屬性
         public ObservableCollection<PropertyEntry> Properties { get; } = new();
         public string SelectedTitle { get; private set; } = "(未選取)";
+    private string _lastGraphReportJson = string.Empty;
+    public string LastGraphReportJson { get => _lastGraphReportJson; private set { if (_lastGraphReportJson != value) { _lastGraphReportJson = value; OnPropertyChanged(nameof(LastGraphReportJson)); } } }
+        // UI 切換：穿越配件連線（代理至 Service）
+        private bool _throughFittingRewireEnabled;
+        public bool ThroughFittingRewireEnabled
+        {
+            get => _throughFittingRewireEnabled;
+            set
+            {
+                if (_throughFittingRewireEnabled != value)
+                {
+                    _throughFittingRewireEnabled = value;
+                    // 同步到 Service
+                    try { _service.ThroughFittingRewireEnabled = value; } catch { }
+                    OnPropertyChanged(nameof(ThroughFittingRewireEnabled));
+                    AddLog($"[Net] 穿越配件連線: {(value ? "On" : "Off")}");
+                    // 若已載入模型，立即重建一次以反映更動
+                    if (CurrentModel != null)
+                    {
+                        try { BuildPipeNetworkCommand.Execute(null); }
+                        catch { }
+                    }
+                }
+            }
+        }
 
         public void AddLog(string msg)
         {
@@ -57,11 +137,16 @@ namespace IFC_Viewer_00.ViewModels
     public ICommand DecreaseLineWidthCommand { get; }
     public ICommand ToggleSnapCommand { get; }
     public ICommand ToggleLevelsCommand { get; }
+    public ICommand ComputeRunsCommand { get; }
+    public ICommand ExportRunsToCsvCommand { get; }
+    public ICommand DumpRewiredEdgesCommand { get; }
     // Phase 0: 顏色切換命令
     public ICommand CycleTerminalColorCommand { get; }
     public ICommand CyclePipeColorCommand { get; }
     public ICommand CyclePipeNodeColorCommand { get; }
     public ICommand CyclePipeEdgeColorCommand { get; }
+    // 新增：快速建構管網命令
+    public ICommand BuildPipeNetworkCommand { get; }
 
     // 視覺預設
     private double _defaultNodeSize = 8.0; // px
@@ -141,12 +226,108 @@ namespace IFC_Viewer_00.ViewModels
         set { if (_showLabels != value) { _showLabels = value; OnPropertyChanged(nameof(ShowLabels)); } }
     }
 
+    // 顯示 Rewired 端點診斷標記（僅視覺輔助）
+    private bool _showRewiredEndpoints = false;
+    public bool ShowRewiredEndpoints
+    {
+        get => _showRewiredEndpoints;
+        set { if (_showRewiredEndpoints != value) { _showRewiredEndpoints = value; OnPropertyChanged(nameof(ShowRewiredEndpoints)); } }
+    }
+
+    // 只顯示 Rewired（僅顯示虛線及其端點）
+    private bool _showOnlyRewired = false;
+    public bool ShowOnlyRewired
+    {
+        get => _showOnlyRewired;
+        set
+        {
+            if (_showOnlyRewired != value)
+            {
+                _showOnlyRewired = value;
+                OnPropertyChanged(nameof(ShowOnlyRewired));
+                AddLog($"[View] 只顯示 Rewired: {(value ? "On" : "Off")}");
+                ApplySystemVisibility();
+            }
+        }
+    }
+
     // 顯示/隱藏所有點（Nodes）
     private bool _showAllNodes = true;
     public bool ShowAllNodes
     {
         get => _showAllNodes;
         set { if (_showAllNodes != value) { _showAllNodes = value; OnPropertyChanged(nameof(ShowAllNodes)); } }
+    }
+
+    // 合併視角模式：A=跨樓層合併；B=按樓層分組
+    public enum MergeViewMode { A_CrossLevels, B_PerFloor }
+    private MergeViewMode _mergeMode = MergeViewMode.A_CrossLevels;
+    public MergeViewMode Mode
+    {
+        get => _mergeMode;
+        set
+        {
+            if (_mergeMode != value)
+            {
+                _mergeMode = value;
+                OnPropertyChanged(nameof(Mode));
+                OnPropertyChanged(nameof(MergeAcrossLevels));
+                SaveColorsToDisk();
+            }
+        }
+    }
+    // 便捷：用 CheckBox 切換 A/B
+    public bool MergeAcrossLevels
+    {
+        get => Mode == MergeViewMode.A_CrossLevels;
+        set { Mode = value ? MergeViewMode.A_CrossLevels : MergeViewMode.B_PerFloor; OnPropertyChanged(nameof(MergeAcrossLevels)); }
+    }
+
+    // 幾何容差（像素；用於 2D 節點鄰近合併）預設為 0=僅關係連接
+    private double _geometryTolerancePx = 0.0;
+    public double GeometryTolerancePx
+    {
+        get => _geometryTolerancePx;
+        set
+        {
+            double v = double.IsNaN(value) || double.IsInfinity(value) ? _geometryTolerancePx : Math.Clamp(value, 0.0, 500.0);
+            if (Math.Abs(_geometryTolerancePx - v) > double.Epsilon)
+            {
+                _geometryTolerancePx = v;
+                OnPropertyChanged(nameof(GeometryTolerancePx));
+                UpdateRunGroupingModeDescription();
+                SaveColorsToDisk();
+            }
+        }
+    }
+
+    // 是否存在由 Ports 關係導出的邊（載入後設定）
+    private bool _hasPortEdges = false;
+    public bool HasPortEdges { get => _hasPortEdges; private set { if (_hasPortEdges != value) { _hasPortEdges = value; OnPropertyChanged(nameof(HasPortEdges)); UpdateRunGroupingModeDescription(); } } }
+
+    private string _runGroupingModeDescription = string.Empty;
+    public string RunGroupingModeDescription { get => _runGroupingModeDescription; private set { if (_runGroupingModeDescription != value) { _runGroupingModeDescription = value; OnPropertyChanged(nameof(RunGroupingModeDescription)); } } }
+
+    private void UpdateRunGroupingModeDescription()
+    {
+        try
+        {
+            if (!HasPortEdges)
+            {
+                if (GeometryTolerancePx <= 0.0001)
+                    RunGroupingModeDescription = "模式：未偵測到 IfcRelConnectsPorts；請設定 GeometryTolerancePx > 0 以使用幾何補橋";
+                else
+                    RunGroupingModeDescription = $"模式：無 Ports，使用幾何補橋 (tol={GeometryTolerancePx:0.##} px)";
+            }
+            else
+            {
+                if (GeometryTolerancePx <= 0.0001)
+                    RunGroupingModeDescription = "模式：System 分桶 + 關係連接 (GeometryTolerance=0 不做幾何橋接)";
+                else
+                    RunGroupingModeDescription = $"模式：System 分桶 + 關係連接 + 幾何補橋 (tol={GeometryTolerancePx:0.##} px)";
+            }
+        }
+        catch { }
     }
 
     // 診斷用：是否顯示縮放錨點（預設關閉）
@@ -162,8 +343,65 @@ namespace IFC_Viewer_00.ViewModels
     public Brush TerminalBrush { get => _terminalBrush; set { if (_terminalBrush != value) { _terminalBrush = value; OnPropertyChanged(nameof(TerminalBrush)); } } }
     private Brush _pipeNodeBrush = Brushes.Black;
     public Brush PipeNodeBrush { get => _pipeNodeBrush; set { if (_pipeNodeBrush != value) { _pipeNodeBrush = value; OnPropertyChanged(nameof(PipeNodeBrush)); } } }
+    // Phase 4: 延遲初始化的專用節點顏色（Fitting / Valve）
+    private Brush? _fittingBrush; // 預設: #3399CC
+    private Brush? _valveBrush;   // 預設: DarkGoldenrod
     private Brush _pipeEdgeBrush = Brushes.DarkSlateGray;
     public Brush PipeEdgeBrush { get => _pipeEdgeBrush; set { if (_pipeEdgeBrush != value) { _pipeEdgeBrush = value; OnPropertyChanged(nameof(PipeEdgeBrush)); } } }
+
+    // 動態圖例顯示用旗標：載入資料時計算（B）
+    private bool _hasFittingNodes;
+    public bool HasFittingNodes { get => _hasFittingNodes; private set { if (_hasFittingNodes != value) { _hasFittingNodes = value; OnPropertyChanged(nameof(HasFittingNodes)); } } }
+    private bool _hasValveNodes;
+    public bool HasValveNodes { get => _hasValveNodes; private set { if (_hasValveNodes != value) { _hasValveNodes = value; OnPropertyChanged(nameof(HasValveNodes)); } } }
+
+    // Run 著色切換與圖例
+    private bool _colorByRunId = false;
+    public bool ColorByRunId
+    {
+        get => _colorByRunId;
+        set
+        {
+            if (_colorByRunId != value)
+            {
+                _colorByRunId = value;
+                OnPropertyChanged(nameof(ColorByRunId));
+                if (_colorByRunId) ApplyRunColorsAndLegend();
+                else { ClearRunColorsToDefault(); RunLegend.Clear(); }
+                SaveColorsToDisk();
+            }
+        }
+    }
+    public ObservableCollection<RunLegendItem> RunLegend { get; } = new();
+    public class RunLegendItem
+    {
+        public int RunId { get; set; }
+        public Brush Color { get; set; } = Brushes.Gray;
+        public int Count { get; set; }
+        public string Label => $"Run {RunId} ({Count})";
+    }
+    public enum RunLegendSortMode { ByRunIdAsc, ByCountDesc }
+    private RunLegendSortMode _runLegendSort = RunLegendSortMode.ByRunIdAsc;
+    public RunLegendSortMode RunLegendSort
+    {
+        get => _runLegendSort;
+        set { if (_runLegendSort != value) { _runLegendSort = value; OnPropertyChanged(nameof(RunLegendSort)); RefreshRunLegendView(); } }
+    }
+    private int _runLegendPageSize = 10;
+    public int RunLegendPageSize
+    {
+        get => _runLegendPageSize;
+        set { int v = Math.Clamp(value, 1, 200); if (_runLegendPageSize != v) { _runLegendPageSize = v; OnPropertyChanged(nameof(RunLegendPageSize)); RefreshRunLegendView(); } }
+    }
+    private int _runLegendPage = 1;
+    public int RunLegendPage
+    {
+        get => _runLegendPage;
+        set { int v = Math.Max(1, value); if (_runLegendPage != v) { _runLegendPage = v; OnPropertyChanged(nameof(RunLegendPage)); RefreshRunLegendView(); } }
+    }
+    public ObservableCollection<RunLegendItem> RunLegendView { get; } = new();
+    public ICommand RunLegendPrevPageCommand { get; }
+    public ICommand RunLegendNextPageCommand { get; }
 
     // Phase 0: 顏色預設清單與索引
     private static readonly Brush[] PresetBrushes = new Brush[]
@@ -176,6 +414,7 @@ namespace IFC_Viewer_00.ViewModels
     private int _pipeBrushIndex = 0; // legacy combined pipe index（保留相容）
     private int _pipeNodeBrushIndex = 0;
     private int _pipeEdgeBrushIndex = 0;
+    
 
     // Settings persistence
     private static readonly string ColorSettingsPath =
@@ -188,12 +427,44 @@ namespace IFC_Viewer_00.ViewModels
         // 新增：短邊隱藏與閾值（使用可為空以相容舊檔）
         public bool? AutoHideShortPipeSizeLabels { get; set; }
         public double? ShortPipeLabelMinLengthPx { get; set; }
+        public double? TagScale { get; set; }
+        public bool? ShowAllNodes { get; set; }
+        public double? GeometryTolerancePx { get; set; }
+        public string? MergeMode { get; set; }
+        public bool? ColorByRunId { get; set; }
+        // 新增：2D 後處理參數（可為空以相容舊檔）
+        public bool? HideTinyStubs { get; set; }
+        public double? MinSegmentScreenLengthPx { get; set; }
+        public double? NodeMergeScreenDistancePx { get; set; }
+        public double? EndpointSnapDistancePx { get; set; }
     }
 
         public SchematicViewModel(SchematicService service, ISelectionService? selection = null)
         {
             _service = service;
             _selection = selection;
+            LastGraphReportJson = string.Empty;
+            // 初始化 UI 旗標（與 Service 同步）
+            try { _throughFittingRewireEnabled = _service.ThroughFittingRewireEnabled; }
+            catch { _throughFittingRewireEnabled = false; }
+            BuildPipeNetworkCommand = new SchematicCommand(async _ =>
+            {
+                try
+                {
+                    AddLog("[Net] 開始建構管網 (Quick)");
+            var (data, report) = await _service.BuildPipeNetworkAsync(CurrentModel ?? throw new InvalidOperationException("未載入模型"));
+            BuildFromData(data);
+            // 建構完後進行 2D 後處理（短邊、吸附、合併等）
+            try { Apply2DPostprocess(); } catch (Exception pex) { AddLog($"[View] 後處理警告: {pex.Message}"); }
+            AddLog($"[Net] 完成: Nodes={report.TotalNodes} Edges={report.TotalEdges} Systems={report.Systems} Runs={report.Runs} ConvertedSegments={report.ConvertedSegments} Rewired={report.RewiredEdges}");
+                    LastGraphReportJson = System.Text.Json.JsonSerializer.Serialize(report);
+                    OnPropertyChanged(nameof(LastGraphReportJson));
+                }
+                catch (Exception ex)
+                {
+                    AddLog("[Net] 失敗: " + ex.Message);
+                }
+            });
             NodeClickCommand = new SchematicCommand(obj =>
             {
                 if (obj is SchematicNodeView nv && nv.Node?.Entity != null)
@@ -238,6 +509,35 @@ namespace IFC_Viewer_00.ViewModels
                 }
             });
 
+            DumpRewiredEdgesCommand = new SchematicCommand(_ =>
+            {
+                try
+                {
+                    var list = Edges.Where(e => e.Edge?.Origin == Models.SchematicEdge.EdgeOriginKind.Rewired)
+                                     .Select(e => new
+                                     {
+                                         S = e.Start?.Node?.Id ?? "(null)",
+                                         T = e.End?.Node?.Id ?? "(null)",
+                                         Sys = !string.IsNullOrWhiteSpace(e.Edge?.SystemAbbreviation) ? e.Edge!.SystemAbbreviation! : (e.Edge?.SystemName ?? ""),
+                                         SX = e.Start?.X ?? double.NaN,
+                                         SY = e.Start?.Y ?? double.NaN,
+                                         TX = e.End?.X ?? double.NaN,
+                                         TY = e.End?.Y ?? double.NaN
+                                     })
+                                     .ToList();
+                    AddLog($"[Rewired] Count={list.Count}");
+                    foreach (var it in list.Take(50))
+                    {
+                        AddLog($"[Rewired] {it.S} -> {it.T} | Sys={it.Sys} | S=({it.SX:0.##},{it.SY:0.##}) T=({it.TX:0.##},{it.TY:0.##})");
+                    }
+                    if (list.Count > 50) AddLog($"[Rewired] ... 其餘 {list.Count - 50} 條省略");
+                }
+                catch (Exception ex)
+                {
+                    AddLog($"[Rewired] 列印失敗: {ex.Message}");
+                }
+            });
+
             IncreaseNodeSizeCommand = new SchematicCommand(_ => AdjustNodeSize(+1));
             DecreaseNodeSizeCommand = new SchematicCommand(_ => AdjustNodeSize(-1));
             IncreaseLineWidthCommand = new SchematicCommand(_ => AdjustLineWidth(+1));
@@ -253,6 +553,13 @@ namespace IFC_Viewer_00.ViewModels
                 LevelsVisible = !LevelsVisible;
                 foreach (var lv in LevelLines) lv.Visible = LevelsVisible;
                 AddLog($"[View] Levels {(LevelsVisible ? "On" : "Off")}");
+            });
+
+            // Run 分組命令初始化
+            ComputeRunsCommand = new SchematicCommand(_ =>
+            {
+                try { ComputeRuns(); AddLog("[Run] 已完成分組"); }
+                catch (Exception ex) { AddLog($"[Run] 分組失敗: {ex.Message}"); }
             });
 
             // 顏色切換（簡易用預設色循環）
@@ -289,6 +596,16 @@ namespace IFC_Viewer_00.ViewModels
                 ApplyCurrentColorsToViews();
                 AddLog($"[View] Pipe 線色切換 → {PipeEdgeBrush}");
                 SaveColorsToDisk();
+            });
+
+            RunLegendPrevPageCommand = new SchematicCommand(_ => { RunLegendPage = Math.Max(1, RunLegendPage - 1); });
+            RunLegendNextPageCommand = new SchematicCommand(_ => { RunLegendPage = RunLegendPage + 1; });
+
+            // 匯出 Run CSV
+            ExportRunsToCsvCommand = new SchematicCommand(_ =>
+            {
+                try { ExportRunsToCsv(); }
+                catch (Exception ex) { AddLog($"[Run] 匯出失敗: {ex.Message}"); }
             });
 
             // 啟動載入既有顏色設定
@@ -502,14 +819,24 @@ namespace IFC_Viewer_00.ViewModels
             var map = new Dictionary<SchematicNode, SchematicNodeView>();
             foreach (var n in data.Nodes)
             {
+                // 決定節點顏色（Phase 4：加入 Fitting 類別顏色）
+                // 規則：FlowTerminal → TerminalBrush；IfcPipeFitting → FittingBrush (新增)；Valve → DarkGoldenrod；其餘（含 PipeSegment 端點）→ PipeNodeBrush
+                var ifcType = n.IfcType ?? string.Empty;
+                System.Windows.Media.Brush brush;
+                if (ifcType.IndexOf("FlowTerminal", StringComparison.OrdinalIgnoreCase) >= 0)
+                    brush = TerminalBrush;
+                else if (ifcType.IndexOf("PipeFitting", StringComparison.OrdinalIgnoreCase) >= 0)
+                    brush = _fittingBrush ??= new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x33, 0x99, 0xCC));
+                else if (ifcType.IndexOf("Valve", StringComparison.OrdinalIgnoreCase) >= 0)
+                    brush = _valveBrush ??= new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.DarkGoldenrod);
+                else
+                    brush = PipeNodeBrush;
                 var nv = new SchematicNodeView
                 {
                     Node = n,
                     X = n.Position2D.X,
                     Y = n.Position2D.Y,
-                    NodeBrush = (n.IfcType?.IndexOf("FlowTerminal", StringComparison.OrdinalIgnoreCase) >= 0)
-                        ? TerminalBrush
-                        : PipeNodeBrush, // 管段端點以 Pipe 色表示，Terminal 用 Terminal 色
+                    NodeBrush = brush,
                     NodeSize = _defaultNodeSize
                 };
                 map[n] = nv;
@@ -541,6 +868,13 @@ namespace IFC_Viewer_00.ViewModels
             // P3: 建立系統過濾並套用可見性
             BuildSystemFiltersFrom(data);
             ApplySystemVisibility();
+            // 動態圖例旗標：統計節點型別
+            try
+            {
+                HasFittingNodes = Nodes.Any(nv => (nv.Node.IfcType ?? string.Empty).IndexOf("PipeFitting", StringComparison.OrdinalIgnoreCase) >= 0);
+                HasValveNodes = Nodes.Any(nv => (nv.Node.IfcType ?? string.Empty).IndexOf("Valve", StringComparison.OrdinalIgnoreCase) >= 0);
+            }
+            catch { HasFittingNodes = HasValveNodes = false; }
             LogVisualSettings();
             return Task.CompletedTask;
         }
@@ -751,6 +1085,9 @@ namespace IFC_Viewer_00.ViewModels
             BuildSystemFiltersFrom(data);
             ApplySystemVisibility();
             LogVisualSettings();
+            // 標記是否有 Ports 邊（以是否存在任何邊為簡化判據）
+            HasPortEdges = data.Edges != null && data.Edges.Count > 0; // TODO: 可再細化來源判斷
+            UpdateRunGroupingModeDescription();
 
             return Task.CompletedTask;
         }
@@ -909,6 +1246,8 @@ namespace IFC_Viewer_00.ViewModels
             FitToCanvas(Nodes, CanvasWidth, CanvasHeight, CanvasPadding);
             if (SnapEnabled) SnapToPixelGrid(Nodes);
             LogVisualSettings();
+            HasPortEdges = data.Edges != null && data.Edges.Count > 0;
+            UpdateRunGroupingModeDescription();
         }
 
         private static SchematicNodeView? FindNodeView(Dictionary<object, SchematicNodeView> map, SchematicNode node)
@@ -965,9 +1304,9 @@ namespace IFC_Viewer_00.ViewModels
                 var isTerminal = nv.Node?.IfcType?.IndexOf("FlowTerminal", StringComparison.OrdinalIgnoreCase) >= 0;
                 nv.NodeBrush = isTerminal ? TerminalBrush : PipeNodeBrush;
             }
-            foreach (var ev in Edges)
+            if (!ColorByRunId)
             {
-                ev.EdgeBrush = PipeEdgeBrush;
+                foreach (var ev in Edges) ev.EdgeBrush = PipeEdgeBrush;
             }
         }
 
@@ -1019,7 +1358,16 @@ namespace IFC_Viewer_00.ViewModels
                     PipeNode = BrushToHex(PipeNodeBrush),
                     PipeEdge = BrushToHex(PipeEdgeBrush),
                     AutoHideShortPipeSizeLabels = AutoHideShortPipeSizeLabels,
-                    ShortPipeLabelMinLengthPx = ShortPipeLabelMinLengthPx
+                    ShortPipeLabelMinLengthPx = ShortPipeLabelMinLengthPx,
+                    TagScale = TagScale,
+                    ShowAllNodes = ShowAllNodes,
+                    GeometryTolerancePx = GeometryTolerancePx,
+                    MergeMode = Mode.ToString(),
+                    ColorByRunId = ColorByRunId,
+                    HideTinyStubs = HideTinyStubs,
+                    MinSegmentScreenLengthPx = MinSegmentScreenLengthPx,
+                    NodeMergeScreenDistancePx = NodeMergeScreenDistancePx,
+                    EndpointSnapDistancePx = EndpointSnapDistancePx
                 };
                 var json = JsonSerializer.Serialize(obj, new JsonSerializerOptions { WriteIndented = true });
                 File.WriteAllText(ColorSettingsPath, json);
@@ -1035,24 +1383,35 @@ namespace IFC_Viewer_00.ViewModels
                 var json = File.ReadAllText(ColorSettingsPath);
                 var obj = JsonSerializer.Deserialize<ColorSettings>(json);
                 if (obj == null) return;
-                var term = HexToBrush(obj.Terminal, TerminalBrush);
-                var pn = HexToBrush(obj.PipeNode, PipeNodeBrush);
-                var pe = HexToBrush(obj.PipeEdge, PipeEdgeBrush);
-                TerminalBrush = term; PipeNodeBrush = pn; PipeEdgeBrush = pe;
+                // 基本筆刷
+                TerminalBrush = HexToBrush(obj.Terminal, TerminalBrush);
+                PipeNodeBrush = HexToBrush(obj.PipeNode, PipeNodeBrush);
+                PipeEdgeBrush = HexToBrush(obj.PipeEdge, PipeEdgeBrush);
                 ApplyCurrentColorsToViews();
-                // 新增：讀取短邊隱藏設定與閾值（相容舊檔：缺少則沿用目前預設值）
+                // 其它設定（相容舊檔，逐一檢）
                 if (obj.AutoHideShortPipeSizeLabels.HasValue)
-                {
-                    _autoHideShortPipeSizeLabels = obj.AutoHideShortPipeSizeLabels.Value;
-                    OnPropertyChanged(nameof(AutoHideShortPipeSizeLabels));
-                }
+                { _autoHideShortPipeSizeLabels = obj.AutoHideShortPipeSizeLabels.Value; OnPropertyChanged(nameof(AutoHideShortPipeSizeLabels)); }
                 if (obj.ShortPipeLabelMinLengthPx.HasValue)
-                {
-                    // 使用公開 setter 的邏輯（含數值檢查與保存）避免重寫驗證邏輯
-                    // 但為避免在載入時立即覆寫檔案，這裡直接設欄位後觸發通知
-                    _shortPipeLabelMinLengthPx = Math.Clamp(obj.ShortPipeLabelMinLengthPx.Value, 0.0, 500.0);
-                    OnPropertyChanged(nameof(ShortPipeLabelMinLengthPx));
-                }
+                { _shortPipeLabelMinLengthPx = Math.Clamp(obj.ShortPipeLabelMinLengthPx.Value, 0.0, 500.0); OnPropertyChanged(nameof(ShortPipeLabelMinLengthPx)); }
+                if (obj.TagScale.HasValue)
+                { _tagScale = Math.Clamp(obj.TagScale.Value, 0.1, 5.0); OnPropertyChanged(nameof(TagScale)); }
+                if (obj.ShowAllNodes.HasValue)
+                { _showAllNodes = obj.ShowAllNodes.Value; OnPropertyChanged(nameof(ShowAllNodes)); }
+                if (obj.GeometryTolerancePx.HasValue)
+                { _geometryTolerancePx = Math.Clamp(obj.GeometryTolerancePx.Value, 0.0, 500.0); OnPropertyChanged(nameof(GeometryTolerancePx)); }
+                if (!string.IsNullOrWhiteSpace(obj.MergeMode) && Enum.TryParse<MergeViewMode>(obj.MergeMode, true, out var m))
+                { _mergeMode = m; OnPropertyChanged(nameof(Mode)); OnPropertyChanged(nameof(MergeAcrossLevels)); }
+                if (obj.ColorByRunId.HasValue)
+                { _colorByRunId = obj.ColorByRunId.Value; OnPropertyChanged(nameof(ColorByRunId)); }
+                // 2D 後處理參數
+                if (obj.HideTinyStubs.HasValue)
+                { _hideTinyStubs = obj.HideTinyStubs.Value; OnPropertyChanged(nameof(HideTinyStubs)); }
+                if (obj.MinSegmentScreenLengthPx.HasValue)
+                { _minSegmentScreenLengthPx = Math.Clamp(obj.MinSegmentScreenLengthPx.Value, 0.0, 100.0); OnPropertyChanged(nameof(MinSegmentScreenLengthPx)); }
+                if (obj.NodeMergeScreenDistancePx.HasValue)
+                { _nodeMergeScreenDistancePx = Math.Clamp(obj.NodeMergeScreenDistancePx.Value, 0.0, 100.0); OnPropertyChanged(nameof(NodeMergeScreenDistancePx)); }
+                if (obj.EndpointSnapDistancePx.HasValue)
+                { _endpointSnapDistancePx = Math.Clamp(obj.EndpointSnapDistancePx.Value, 0.0, 100.0); OnPropertyChanged(nameof(EndpointSnapDistancePx)); }
                 AddLog("[View] 已載入顏色設定");
             }
             catch { }
@@ -1396,20 +1755,153 @@ namespace IFC_Viewer_00.ViewModels
             double maxX = nodes.Max(n => n.X);
             double minY = nodes.Min(n => n.Y);
             double maxY = nodes.Max(n => n.Y);
-
-            double width = Math.Max(1e-6, maxX - minX);
-            double height = Math.Max(1e-6, maxY - minY);
+            double width = Math.Max(1e-9, maxX - minX);
+            double height = Math.Max(1e-9, maxY - minY);
 
             double targetW = Math.Max(1, canvasWidth - 2 * padding);
             double targetH = Math.Max(1, canvasHeight - 2 * padding);
             double scale = Math.Min(targetW / width, targetH / height);
-            if (double.IsInfinity(scale) || double.IsNaN(scale) || scale <= 0) scale = 1.0;
+            if (double.IsNaN(scale) || double.IsInfinity(scale) || scale <= 0) scale = 1.0;
 
             foreach (var v in nodes)
             {
-                v.X = (v.X - minX) * scale + padding;
-                v.Y = (v.Y - minY) * scale + padding;
+                double nx = (v.X - minX) * scale + padding;
+                double ny = (v.Y - minY) * scale + padding;
+                v.X = nx;
+                v.Y = ny;
+                if (v.Node != null) v.Node.Position2D = new Point(nx, ny);
             }
+        }
+        // ===== 2D 後處理（短邊段、端點吸附/節點合併、與 ThroughFitting 虛線整合）=====
+        private void Apply2DPostprocess()
+        {
+            try
+            {
+                if (Nodes.Count == 0) return;
+
+                // 建立度數快取
+                var incident = new Dictionary<SchematicNodeView, List<SchematicEdgeView>>();
+                foreach (var nv in Nodes) incident[nv] = new List<SchematicEdgeView>();
+                foreach (var ev in Edges)
+                {
+                    if (ev.Start != null) incident[ev.Start].Add(ev);
+                    if (ev.End != null) incident[ev.End].Add(ev);
+                }
+
+                // 1) 節點合併（純 2D 座標合併，不改 ID/拓樸）
+                double mergeTol = Math.Max(0.0, NodeMergeScreenDistancePx);
+                if (mergeTol > 0.0)
+                {
+                    // 以 PipeSegment 端點優先為錨點
+                    int Deg(SchematicNodeView v) => (incident.TryGetValue(v, out var list) ? list.Count : 0);
+                    bool IsPipeSeg(SchematicNodeView v) => v?.Node?.IsFromPipeSegment == true;
+                    var ordered = Nodes.OrderByDescending(IsPipeSeg).ThenByDescending(Deg).ToList();
+                    var used = new HashSet<SchematicNodeView>();
+                    for (int i = 0; i < ordered.Count; i++)
+                    {
+                        var a = ordered[i];
+                        if (used.Contains(a)) continue;
+                        for (int j = i + 1; j < ordered.Count; j++)
+                        {
+                            var b = ordered[j];
+                            if (used.Contains(b)) continue;
+                            double dx = a.X - b.X, dy = a.Y - b.Y;
+                            if ((dx * dx + dy * dy) <= mergeTol * mergeTol)
+                            {
+                                // 將 b 吸附到 a
+                                b.X = a.X; b.Y = a.Y;
+                                b.Node.Position2D = new Point(b.X, b.Y);
+                                used.Add(b);
+                            }
+                        }
+                    }
+                }
+
+                // 2) 端點吸附（以邊端點為中心，若另一端點距離在閾值內，則兩者對齊）
+                double snapTol = Math.Max(0.0, EndpointSnapDistancePx);
+                if (snapTol > 0.0)
+                {
+                    foreach (var ev in Edges)
+                    {
+                        var s = ev.Start; var t = ev.End; if (s == null || t == null) continue;
+                        double dx = s.X - t.X, dy = s.Y - t.Y;
+                        if ((dx * dx + dy * dy) <= snapTol * snapTol)
+                        {
+                            // 以度數較高者為基準
+                            int ds = incident.TryGetValue(s, out var ls) ? ls.Count : 0;
+                            int dt = incident.TryGetValue(t, out var lt) ? lt.Count : 0;
+                            var anchor = ds >= dt ? s : t;
+                            var follower = ds >= dt ? t : s;
+                            follower.X = anchor.X; follower.Y = anchor.Y;
+                            follower.Node.Position2D = new Point(follower.X, follower.Y);
+                        }
+                    }
+                }
+
+                // 3) 短邊段處理與 ThroughFitting 虛線整合
+                double minLen = Math.Max(0.0, MinSegmentScreenLengthPx);
+                if (HideTinyStubs && minLen > 0.0)
+                {
+                    // 3.1 一般短邊：直接隱藏（視覺層，不改拓樸）
+                    foreach (var ev in Edges)
+                    {
+                        double dx = (ev.End?.X ?? 0) - (ev.Start?.X ?? 0);
+                        double dy = (ev.End?.Y ?? 0) - (ev.Start?.Y ?? 0);
+                        double len = Math.Sqrt(dx * dx + dy * dy);
+                        // 不隱藏 Rewired（虛線）邊，避免誤殺穿越配件連線
+                        if (len < minLen)
+                        {
+                            if (ev.Edge?.Origin == Models.SchematicEdge.EdgeOriginKind.Rewired)
+                                ev.Visible = true; // 保持可見
+                            else
+                                ev.Visible = false;
+                        }
+                    }
+
+                    // 3.2 配件度數=2 且兩端皆短 → 若存在 Rewired 邊，隱藏兩段 stub
+                    bool IsFitting(SchematicNodeView v)
+                    {
+                        var t = v?.Node?.IfcType ?? string.Empty;
+                        return t.IndexOf("PipeFitting", StringComparison.OrdinalIgnoreCase) >= 0 || t.IndexOf("FlowFitting", StringComparison.OrdinalIgnoreCase) >= 0;
+                    }
+                    var rewiredPairs = new HashSet<(SchematicNodeView a, SchematicNodeView b)>(
+                        Edges.Where(e => e.Edge?.Origin == Models.SchematicEdge.EdgeOriginKind.Rewired && e.Start != null && e.End != null)
+                             .Select(e => (a: e.Start, b: e.End))
+                    );
+
+                    foreach (var nv in Nodes)
+                    {
+                        if (!IsFitting(nv)) continue;
+                        if (!incident.TryGetValue(nv, out var inc) || inc.Count != 2) continue;
+                        var e1 = inc[0]; var e2 = inc[1];
+                        double l1 = Math.Sqrt(Math.Pow((e1.End.X - e1.Start.X), 2) + Math.Pow((e1.End.Y - e1.Start.Y), 2));
+                        double l2 = Math.Sqrt(Math.Pow((e2.End.X - e2.Start.X), 2) + Math.Pow((e2.End.Y - e2.Start.Y), 2));
+                        if (l1 >= minLen || l2 >= minLen) continue;
+
+                        // 找出兩端的「非配件」鄰居
+                        SchematicNodeView other1 = ReferenceEquals(e1.Start, nv) ? e1.End : e1.Start;
+                        SchematicNodeView other2 = ReferenceEquals(e2.Start, nv) ? e2.End : e2.Start;
+                        if (other1 == null || other2 == null) continue;
+
+                        bool hasRewired = rewiredPairs.Any(p =>
+                            (ReferenceEquals(p.a, other1) && ReferenceEquals(p.b, other2)) ||
+                            (ReferenceEquals(p.a, other2) && ReferenceEquals(p.b, other1))
+                        );
+                        if (hasRewired)
+                        {
+                            e1.Visible = false; e2.Visible = false;
+                        }
+                    }
+
+                    // 3.3 安全網：確保所有 Rewired 邊保持可見（即便極短）
+                    foreach (var ev in Edges)
+                    {
+                        if (ev.Edge?.Origin == Models.SchematicEdge.EdgeOriginKind.Rewired)
+                            ev.Visible = true;
+                    }
+                }
+            }
+            catch { }
         }
 
         // 建立樓層線視圖（需要在節點座標最終定案之後呼叫）
@@ -1470,7 +1962,7 @@ namespace IFC_Viewer_00.ViewModels
             catch { }
         }
 
-        private enum ProjectionPlane { XY, XZ, YZ }
+    private enum ProjectionPlane { XY, XZ, YZ }
 
         // 以 3D 座標自動選擇最佳投影面：
         // 策略：計算 X/Y/Z 三軸的跨度 (range)；選擇跨度最小的軸作為「厚度」方向，捨棄之，
@@ -1614,7 +2106,10 @@ namespace IFC_Viewer_00.ViewModels
                     string disp = !string.IsNullOrWhiteSpace(abbr) && !string.IsNullOrWhiteSpace(name)
                         ? $"{abbr} – {name}"
                         : (!string.IsNullOrWhiteSpace(abbr) ? abbr : (!string.IsNullOrWhiteSpace(name) ? name : UnassignedSystem));
-                    var opt = new SystemFilterOption { Key = kv.Key, Display = disp, IsChecked = true };
+                    // 預設只勾選 SWP / VP / WP 三類，其餘不勾選（可於 UI 再調整）
+                    var preset = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "SWP", "VP", "WP" };
+                    bool isChecked = preset.Contains(kv.Key);
+                    var opt = new SystemFilterOption { Key = kv.Key, Display = disp, IsChecked = isChecked };
                     opt.PropertyChanged += (_, __) => ApplySystemVisibility();
                     Systems.Add(opt);
                 }
@@ -1630,7 +2125,8 @@ namespace IFC_Viewer_00.ViewModels
                 {
                     foreach (var nv in Nodes) nv.Visible = true;
                     foreach (var ev in Edges) ev.Visible = true;
-                    return;
+                    // 仍可能需要再套 ShowOnlyRewired
+                    if (!ShowOnlyRewired) return;
                 }
                 var allowed = Systems.Where(s => s.IsChecked).Select(s => s.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
                 foreach (var nv in Nodes)
@@ -1642,11 +2138,43 @@ namespace IFC_Viewer_00.ViewModels
                 }
                 foreach (var ev in Edges)
                 {
+                    // 邊要同時考量兩端節點是否可見
+                    bool endpointsVisible = (ev.Start?.Visible != false) && (ev.End?.Visible != false);
+                    // Rewired 邊：以端點可見為準，避免因邊缺少/不同系統而被誤隱藏
+                    if (ev.Edge?.Origin == Models.SchematicEdge.EdgeOriginKind.Rewired)
+                    {
+                        ev.Visible = endpointsVisible;
+                        continue;
+                    }
+
                     string key = !string.IsNullOrWhiteSpace(ev.Edge?.SystemAbbreviation)
                         ? ev.Edge!.SystemAbbreviation!
                         : (!string.IsNullOrWhiteSpace(ev.Edge?.SystemName) ? ev.Edge!.SystemName! : UnassignedSystem);
-                    // 邊要同時考量兩端節點是否可見
-                    ev.Visible = allowed.Contains(key) && (ev.Start?.Visible != false) && (ev.End?.Visible != false);
+                    ev.Visible = allowed.Contains(key) && endpointsVisible;
+                }
+
+                // 若只顯示 Rewired：將非 Rewired 邊隱藏，且節點只保留與可見 Rewired 邊相連者
+                if (ShowOnlyRewired)
+                {
+                    // 隱藏所有非 Rewired 邊；保留已判定可見的 Rewired 邊
+                    foreach (var ev in Edges)
+                    {
+                        if (ev.Edge?.Origin != Models.SchematicEdge.EdgeOriginKind.Rewired)
+                            ev.Visible = false;
+                    }
+                    // 節點：僅保留為「任何可見 Rewired 邊」之端點，且維持其原本可見狀態條件
+                    var nodesWithRewired = new HashSet<SchematicNodeView>();
+                    foreach (var ev in Edges)
+                    {
+                        if (!ev.Visible) continue;
+                        if (ev.Edge?.Origin != Models.SchematicEdge.EdgeOriginKind.Rewired) continue;
+                        if (ev.Start != null) nodesWithRewired.Add(ev.Start);
+                        if (ev.End != null) nodesWithRewired.Add(ev.End);
+                    }
+                    foreach (var nv in Nodes)
+                    {
+                        nv.Visible = nv.Visible && nodesWithRewired.Contains(nv);
+                    }
                 }
             }
             catch { }
@@ -1656,6 +2184,222 @@ namespace IFC_Viewer_00.ViewModels
         public void ApplySystemVisibilityNow()
         {
             ApplySystemVisibility();
+        }
+
+        // ===== Run 分組：依系統 + 尺寸 + （視模式）樓層 + 幾何相連 =====
+        private void ComputeRuns()
+        {
+            if (Edges.Count == 0) return;
+            double tol = Math.Max(0.0, GeometryTolerancePx);
+
+            // 快取端點座標
+            var nodePt = Nodes.ToDictionary(n => n, n => new Point(n.X, n.Y));
+
+            string SysKey(SchematicEdgeView ev)
+            {
+                var ab = ev.Edge?.SystemAbbreviation; var nm = ev.Edge?.SystemName;
+                return !string.IsNullOrWhiteSpace(ab) ? ab!.Trim() : (!string.IsNullOrWhiteSpace(nm) ? nm!.Trim() : UnassignedSystem);
+            }
+            // 分組改為僅以 System 做分桶，忽略 Size 與 Level
+
+            var buckets = new Dictionary<string, List<SchematicEdgeView>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var ev in Edges)
+            {
+                var sys = SysKey(ev);
+                var key = sys; // 僅以 System 分桶
+                if (!buckets.TryGetValue(key, out var list)) { list = new List<SchematicEdgeView>(); buckets[key] = list; }
+                list.Add(ev);
+            }
+
+            int nextRunId = 1;
+            foreach (var kv in buckets)
+            {
+                var list = kv.Value;
+                if (list.Count == 0) continue;
+
+                // 節點集合
+                var endpoints = new List<SchematicNodeView>();
+                foreach (var ev in list)
+                { if (ev.Start != null) endpoints.Add(ev.Start); if (ev.End != null) endpoints.Add(ev.End); }
+                endpoints = endpoints.Distinct().ToList();
+
+                var index = endpoints.Select((n, i) => (n, i)).ToDictionary(x => x.n, x => x.i);
+                var parent = Enumerable.Range(0, endpoints.Count).ToArray();
+                int Find(int x) { while (parent[x] != x) x = parent[x] = parent[parent[x]]; return x; }
+                void Union(int a, int b) { int ra = Find(a), rb = Find(b); if (ra != rb) parent[rb] = ra; }
+
+                // 端點鄰近（<= tol）合併
+                for (int i = 0; i < endpoints.Count; i++)
+                {
+                    var pi = nodePt[endpoints[i]];
+                    for (int j = i + 1; j < endpoints.Count; j++)
+                    {
+                        var pj = nodePt[endpoints[j]];
+                        var dx = pi.X - pj.X; var dy = pi.Y - pj.Y;
+                        if (dx * dx + dy * dy <= tol * tol) Union(i, j);
+                    }
+                }
+                // 同條邊兩端也聯集
+                foreach (var ev in list)
+                {
+                    if (ev.Start == null || ev.End == null) continue;
+                    Union(index[ev.Start], index[ev.End]);
+                }
+
+                // 指派 RunId 以集合代表為鍵
+                var rep2Run = new Dictionary<int, int>();
+                foreach (var ev in list)
+                {
+                    if (ev.Start == null) continue;
+                    int rep = Find(index[ev.Start]);
+                    if (!rep2Run.TryGetValue(rep, out var run)) { run = nextRunId++; rep2Run[rep] = run; }
+                    ev.Edge.RunId = run;
+                }
+            }
+
+            // 通知 UI（屬性面板）
+            foreach (var ev in Edges) { ev.Edge = ev.Edge; }
+
+            if (ColorByRunId) ApplyRunColorsAndLegend();
+        }
+
+        private void ApplyRunColorsAndLegend()
+        {
+            try
+            {
+                var groups = Edges.Where(e => e.Edge?.RunId != null)
+                                   .GroupBy(e => e.Edge!.RunId!.Value)
+                                   .OrderBy(g => g.Key)
+                                   .ToList();
+                // 著色
+                foreach (var g in groups)
+                {
+                    var brush = BrushForRunId(g.Key);
+                    foreach (var e in g) e.EdgeBrush = brush;
+                }
+                foreach (var e in Edges.Where(e => e.Edge?.RunId == null)) e.EdgeBrush = PipeEdgeBrush;
+
+                // 圖例
+                RunLegend.Clear();
+                foreach (var g in groups)
+                {
+                    RunLegend.Add(new RunLegendItem { RunId = g.Key, Color = BrushForRunId(g.Key), Count = g.Count() });
+                }
+                RefreshRunLegendView();
+            }
+            catch { }
+        }
+
+        private int _runLegendTotalPages = 1;
+        public int RunLegendTotalPages { get => _runLegendTotalPages; private set { if (_runLegendTotalPages != value) { _runLegendTotalPages = Math.Max(1, value); OnPropertyChanged(nameof(RunLegendTotalPages)); } } }
+        private int _runLegendTotalItems = 0;
+        public int RunLegendTotalItems { get => _runLegendTotalItems; private set { if (_runLegendTotalItems != value) { _runLegendTotalItems = Math.Max(0, value); OnPropertyChanged(nameof(RunLegendTotalItems)); } } }
+
+        private void RefreshRunLegendView()
+        {
+            try
+            {
+                IEnumerable<RunLegendItem> all = RunLegend;
+                // 排序
+                all = RunLegendSort == RunLegendSortMode.ByCountDesc
+                    ? all.OrderByDescending(x => x.Count).ThenBy(x => x.RunId)
+                    : all.OrderBy(x => x.RunId);
+
+                // 計算總頁數
+                var total = all.Count();
+                RunLegendTotalItems = total;
+                int pageSize = Math.Max(1, RunLegendPageSize);
+                int totalPages = Math.Max(1, (int)Math.Ceiling(total / (double)pageSize));
+                RunLegendTotalPages = totalPages;
+                if (RunLegendPage > totalPages) RunLegendPage = totalPages;
+                if (RunLegendPage < 1) RunLegendPage = 1;
+
+                // 分頁
+                var page = RunLegendPage;
+                var src = all.Skip((page - 1) * pageSize).Take(pageSize);
+
+                RunLegendView.Clear();
+                foreach (var it in src) RunLegendView.Add(it);
+            }
+            catch { }
+        }
+
+        private void ClearRunColorsToDefault()
+        {
+            foreach (var e in Edges) e.EdgeBrush = PipeEdgeBrush;
+        }
+
+        private static readonly Brush[] RunPalette = new Brush[]
+        {
+            new SolidColorBrush(Color.FromRgb(0x1f,0x77,0xb4)), // blue
+            new SolidColorBrush(Color.FromRgb(0xff,0x7f,0x0e)), // orange
+            new SolidColorBrush(Color.FromRgb(0x2c,0xa0,0x2c)), // green
+            new SolidColorBrush(Color.FromRgb(0xd6,0x27,0x28)), // red
+            new SolidColorBrush(Color.FromRgb(0x94,0x67,0xbd)), // purple
+            new SolidColorBrush(Color.FromRgb(0x8c,0x56,0x4b)), // brown
+            new SolidColorBrush(Color.FromRgb(0xe3,0x77,0xc2)), // pink
+            new SolidColorBrush(Color.FromRgb(0x7f,0x7f,0x7f)), // gray
+            new SolidColorBrush(Color.FromRgb(0xbc,0xbd,0x22)), // olive
+            new SolidColorBrush(Color.FromRgb(0x17,0xbe,0xcf))  // cyan
+        };
+        private static Brush BrushForRunId(int runId)
+        {
+            if (runId <= 0) return Brushes.DarkSlateGray;
+            int idx = (runId - 1) % RunPalette.Length;
+            return RunPalette[idx];
+        }
+
+        private void ExportRunsToCsv()
+        {
+            var runs = Edges.Where(e => e.Edge?.RunId != null).GroupBy(e => e.Edge!.RunId!.Value);
+            if (!runs.Any()) { AddLog("[Run] 無可匯出的分組（請先執行 Run 分組）"); return; }
+
+            var rows = new List<string>();
+            rows.Add("RunId,System,Size,Floors,Length,Count");
+            string Safe(string? s) => string.IsNullOrWhiteSpace(s) ? string.Empty : s.Replace("\"", "\"\"");
+
+            foreach (var g in runs.OrderBy(g => g.Key))
+            {
+                int runId = g.Key;
+                var first = g.First();
+                string sys = !string.IsNullOrWhiteSpace(first.Edge.SystemAbbreviation) ? first.Edge.SystemAbbreviation! : (first.Edge.SystemName ?? string.Empty);
+                string size = FormatPipeSizeLabel(first.Edge) ?? string.Empty;
+                var floors = g.Select(e => e.Edge.LevelName).Where(s => !string.IsNullOrWhiteSpace(s)).Distinct().OrderBy(s => s).ToList();
+                string floorsStr = string.Join("/", floors);
+                double totalLen = 0.0;
+                foreach (var e in g)
+                {
+                    var s = e.Start?.Node?.Position3D; var t = e.End?.Node?.Position3D;
+                    if (s != null && t != null)
+                    {
+                        double dx = t.Value.X - s.Value.X;
+                        double dy = t.Value.Y - s.Value.Y;
+                        double dz = t.Value.Z - s.Value.Z;
+                        totalLen += Math.Sqrt(dx * dx + dy * dy + dz * dz);
+                    }
+                }
+                int count = g.Count();
+                rows.Add($"{runId},\"{Safe(sys)}\",\"{Safe(size)}\",\"{Safe(floorsStr)}\",{totalLen:0.###},{count}");
+            }
+
+            try
+            {
+                var dlg = new Microsoft.Win32.SaveFileDialog
+                {
+                    Title = "匯出 Run 分組 CSV",
+                    Filter = "CSV 檔 (*.csv)|*.csv|所有檔案 (*.*)|*.*",
+                    FileName = $"runs_{DateTime.Now:yyyyMMdd_HHmmss}.csv"
+                };
+                if (dlg.ShowDialog() == true)
+                {
+                    File.WriteAllLines(dlg.FileName, rows);
+                    AddLog($"[Run] 已匯出 CSV: {dlg.FileName}");
+                }
+            }
+            catch (Exception ex)
+            {
+                AddLog($"[Run] 匯出失敗: {ex.Message}");
+            }
         }
     }
 }

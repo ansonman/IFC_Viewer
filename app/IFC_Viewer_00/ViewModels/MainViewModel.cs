@@ -76,6 +76,7 @@ namespace IFC_Viewer_00.ViewModels
     public RelayCommand GeneratePipeAxesWithTerminalsCommand { get; }
     public RelayCommand GeneratePipeAxesWithTerminalsP2Command { get; }
     public RelayCommand GeneratePipeAxesWithTerminalsP3Command { get; }
+    public RelayCommand GeneratePipeAxesWithTerminalsP4Command { get; }
     public RelayCommand ShowPipeOverlay3DCommand { get; }
     public RelayCommand ShowTestOverlay3DCommand { get; }
     public RelayCommand ShowAxesOverlay3DCommand { get; }
@@ -99,6 +100,8 @@ namespace IFC_Viewer_00.ViewModels
             GeneratePipeAxesWithTerminalsP2Command = new RelayCommand(async () => await OnGeneratePipeAxesWithTerminalsP2Async());
             // Phase 3: 獨立入口，不影響既有 PSC/PSC P2
             GeneratePipeAxesWithTerminalsP3Command = new RelayCommand(async () => await OnGeneratePipeAxesWithTerminalsP3Async());
+            // Phase 4: 在 P3 基礎上加入 Fittings (S1) ，維持獨立入口
+            GeneratePipeAxesWithTerminalsP4Command = new RelayCommand(async () => await OnGeneratePipeAxesWithTerminalsP4Async());
             ShowPipeOverlay3DCommand = new RelayCommand(async () => await OnShowPipeOverlay3DAsync());
             ShowTestOverlay3DCommand = new RelayCommand(OnShowTestOverlay3D);
             ShowAxesOverlay3DCommand = new RelayCommand(() => OnShowAxesOverlay3D());
@@ -760,6 +763,52 @@ namespace IFC_Viewer_00.ViewModels
             catch (Exception ex)
             {
                 MessageBox.Show($"PSC P3 生成失敗: {ex.Message}", "PSC P3", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // Phase 4：在 P3 基礎上加入 Fittings (S1)；呼叫新版含 options 服務
+        private async Task OnGeneratePipeAxesWithTerminalsP4Async()
+        {
+            try
+            {
+                if (Model == null)
+                {
+                    StatusMessage = "尚未載入模型";
+                    MessageBox.Show("尚未載入模型", "PSC P4", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                string plane = "XY";
+                try
+                {
+                    var dlg = new PlaneSelectionDialog { Owner = Application.Current?.Windows.OfType<Window>().FirstOrDefault(w => w.IsActive) };
+                    if (dlg.ShowDialog() == true) plane = dlg.SelectedPlane;
+                }
+                catch { }
+
+                var service = new SchematicService();
+                var options = new PipeAxesOptions { IncludeFittings = true, IncludeTerminals = true };
+                var data = await service.GeneratePipeAxesWithTerminalsAsync(Model, plane, flipY: true, options);
+                if (data.Nodes.Count == 0)
+                {
+                    MessageBox.Show("模型中沒有可解析的資料。", "PSC P4", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                var svm = new IFC_Viewer_00.ViewModels.SchematicViewModel(service, _selection)
+                {
+                    CanvasWidth = 1200,
+                    CanvasHeight = 800,
+                    CanvasPadding = 40
+                };
+                svm.AddLog("[PSC P4] 入口：在 P3 基礎加入 Fittings (S1) - 僅新增 Fitting 節點，不改 segment 邊拓撲");
+                await svm.LoadPipeAxesAsync(data);
+                svm.AddLog($"生成管段軸線+終端紅點+Fittings（P4）：Nodes={data.Nodes.Count} Plane={plane}");
+                var view = new SchematicView { DataContext = svm };
+                view.Title = $"PSC P4 - {data.Edges.Count} 段 ({plane})";
+                view.Show();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"PSC P4 生成失敗: {ex.Message}", "PSC P4", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 

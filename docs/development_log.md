@@ -2,6 +2,41 @@
 
 記錄主要里程碑、重要改動與回歸修復。
 
+## 2025-10-09
+### PSC P4：管線示意（Pipe Schematic Canvas）階段化擴充 – S1（僅加入配件節點）
+本日新增一個獨立入口「PSC P4」以隔離現有 PSC P3 行為：
+- P4 內部沿用 P3 的主流程（拓撲 / Run 分組 / 終端點投影），再套用階段化策略 S1：插入 PipeFitting 類型節點（PipeFitting, Valve, 其餘後續再評估）。
+- 新增 `PipeAxesOptions`（IncludeFittings / IncludeTerminals），入口 P4 以 `IncludeFittings=true` 啟用配件節點注入；P3 保持舊簽名不受影響。
+- System 命名：當含配件節點時在顯示名稱附加「+Fittings」標記以利視覺辨識（不影響既有 SystemId / 後續查詢）。
+
+### 視覺與互動
+- 新增節點分類著色：FlowTerminal / PipeFitting / Valve / Pipe 端點 (預設)。
+- 圖例（Legend）加入 Fitting (#3399CC) 與 Valve (DarkGoldenrod) 條目；節點 ToolTip 直接顯示 IfcType 分類文字，利於比對 IFC 原始型別。
+- 此階段圖例條目為靜態；後續（B）將改為「僅在該分類至少出現一個節點時才顯示」。
+
+### 風險 / 限制
+- 僅完成 S1：以 IFC 中 PipeFitting/Valve 元件中心點投影為節點，尚未重寫邊界（Edge）或以配件取代原端點（S2）。
+- Ports 拓撲仍沿用 P3 版本；複雜三通 / 彎頭的方向語意尚未揭露。
+- NU1701 相容性警告仍存在（第三方套件目標框架差異），本變更未觸及封裝層，不影響。
+
+### 後續里程碑（草案）
+1. (B) 動態圖例：根據當前載入資料計算 HasFittingNodes / HasValveNodes → 控制可見性。
+2. S2：以配件節點替換原管端點簡化冗餘（避免「接頭兩側 + 原端點」重複）。
+3. S3：完整 Ports 拓撲（多連接 / 精確方向 / 夾角呈現），並為三通/四通建立幾何方向標記。
+4. 增加單元測試：驗證在 IncludeFittings=true / false 下節點計數與 SystemName 標記差異。
+5. 文件：在 Schematic 模組 README 增補「階段化策略（S1~S3）」章節與使用者驗收清單。
+
+### 驗收檢查（今日）
+- P3 與舊按鈕行為無變化（回歸手測：節點計數、無 +Fittings 後綴）。
+- P4 產出節點計數 ≥ P3（至少多出所有 PipeFitting/Valve 節點數）。
+- 圖例與 ToolTip 出現新分類文字且無崩潰 / 無 NRE。
+- Build 成功；無新增警告（僅既有 NU1701）。
+
+### 待追蹤議題
+- 若後續實作 S2，需重新檢視現行選取同步與 ZoomSelected 是否會因節點替換造成映射遺失；可能須維護「原端點 → 配件節點」對應表。
+
+（以上條目對應需求：A 完成）
+
 ## 2025-09-21
   - 若非純集合，嘗試其內部屬性或方法（Add/AddRange/Set/EntityLabels/SelectedEntities 等）
   - 全部路徑失敗則退回 SelectedEntity，確保至少單選可見

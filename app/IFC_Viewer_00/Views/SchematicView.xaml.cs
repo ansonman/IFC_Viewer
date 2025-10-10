@@ -78,74 +78,99 @@ namespace IFC_Viewer_00.Views
                     }
                     catch { }
 
-                    var owner = this.Owner as MainWindow;
-                    if (owner != null)
+                    // 以反射方式嘗試 2D↔3D 同步：
+                    // - 在主系統 (IFC_Viewer_00) 中會找到 _viewerService 與 _selectionService 並作用
+                    // - 在 PSD_Simple 中找不到這些欄位則自動跳過，不影響編譯與執行
+                    var ownerObj = this.Owner;
+                    var ownerType = ownerObj?.GetType();
+                    if (ownerObj != null && ownerType != null)
                     {
-                        var field = typeof(MainWindow).GetField("_viewerService", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                        var svc = field?.GetValue(owner) as IViewer3DService;
-                        var selField = typeof(MainWindow).GetField("_selectionService", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                        var sel = selField?.GetValue(owner) as ISelectionService;
-                        if (svc != null)
+                        try
                         {
-                            svm.RequestHighlight += (entity, zoom) =>
+                            var field = ownerType.GetField("_viewerService", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                            var svc = field?.GetValue(ownerObj); // 未指定型別，後續用反射呼叫方法
+                            var selField = ownerType.GetField("_selectionService", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                            var sel = selField?.GetValue(ownerObj) as ISelectionService;
+                            // 建立以反射呼叫 HighlightEntities 的委派
+                            Action<int[], bool>? highlightByLabels = null;
+                            if (svc != null)
                             {
                                 try
                                 {
-                                    // 以 IIfcObject 嘗試，若不是則忽略
-                                    if (entity is Xbim.Ifc4.Interfaces.IIfcObject obj)
+                                    var mi = svc.GetType().GetMethod("HighlightEntities", new[] { typeof(int[]), typeof(bool) });
+                                    if (mi != null)
                                     {
-                                        var lbl = (obj as Xbim.Common.IPersistEntity)?.EntityLabel ?? 0;
-                                        if (lbl != 0) svc.HighlightEntities(new[] { lbl }, true);
-                                        else svc.HighlightEntities(new[] { (Xbim.Common.IPersistEntity)obj });
-                                        if (zoom)
+                                        highlightByLabels = (labels, clearPrev) =>
                                         {
-                                            // 透過 MainWindow 的 ZoomSelected 流程
-                                            var host = owner.FindName("ViewerHost") as System.Windows.Controls.ContentControl;
-                                            if (host?.Content != null)
+                                            try { mi.Invoke(svc, new object?[] { labels, clearPrev }); } catch { }
+                                        };
+                                    }
+                                }
+                                catch { }
+                            }
+                            // 連接 VM → 3D 高亮請求
+                            if (highlightByLabels != null)
+                            {
+                                svm.RequestHighlight += (entity, zoom) =>
+                                {
+                                    try
+                                    {
+                                        var lbl = (entity as Xbim.Common.IPersistEntity)?.EntityLabel ?? 0;
+                                        if (lbl != 0)
+                                        {
+                                            highlightByLabels(new[] { lbl }, true);
+                                            if (zoom)
                                             {
-                                                var mi = host.Content.GetType().GetMethod("ZoomSelected");
-                                                mi?.Invoke(host.Content, null);
+                                                // 嘗試呼叫 3D Viewer 的 ZoomSelected（與主系統一致）
+                                                var host = ownerObj as FrameworkElement;
+                                                if (host != null)
+                                                {
+                                                    var viewerHost = host.FindName("ViewerHost") as System.Windows.Controls.ContentControl;
+                                                    var content = viewerHost?.Content;
+                                                    var zoomMi = content?.GetType().GetMethod("ZoomSelected");
+                                                    zoomMi?.Invoke(content, null);
+                                                }
                                             }
                                         }
                                     }
-                                }
-                                catch { }
-                            };
-                        }
-
-                        // 監聽全域選取變更，更新原理圖節點/邊的選取樣式
-                        if (sel != null)
-                        {
-                            sel.SelectionChanged += (s2, e2) =>
+                                    catch { }
+                                };
+                            }
+                            if (sel != null)
                             {
-                                try
+                                sel.SelectionChanged += (s2, e2) =>
                                 {
-                                    var set = sel.Selected.ToHashSet();
-                                    foreach (var nv in svm.Nodes)
+                                    try
                                     {
-                                        var id = (nv.Node.Entity as Xbim.Common.IPersistEntity)?.EntityLabel ?? 0;
-                                        nv.IsSelected = id != 0 && set.Contains(id);
+                                        var set = sel.Selected.ToHashSet();
+                                        foreach (var nv in svm.Nodes)
+                                        {
+                                            var id = (nv.Node.Entity as Xbim.Common.IPersistEntity)?.EntityLabel ?? 0;
+                                            nv.IsSelected = id != 0 && set.Contains(id);
+                                        }
+                                        foreach (var ev in svm.Edges)
+                                        {
+                                            var sid = (ev.Start.Node.Entity as Xbim.Common.IPersistEntity)?.EntityLabel ?? 0;
+                                            var tid = (ev.End.Node.Entity as Xbim.Common.IPersistEntity)?.EntityLabel ?? 0;
+                                            ev.IsSelected = (sid != 0 && set.Contains(sid)) || (tid != 0 && set.Contains(tid));
+                                        }
+                                        // 同步 3D 高亮（若可用）
+                                        if (highlightByLabels != null)
+                                        {
+                                            try
+                                            {
+                                                highlightByLabels(Array.Empty<int>(), true);
+                                                var labels = sel.Selected?.ToArray() ?? Array.Empty<int>();
+                                                if (labels.Length > 0) highlightByLabels(labels, false);
+                                            }
+                                            catch { }
+                                        }
                                     }
-                                    foreach (var ev in svm.Edges)
-                                    {
-                                        var sid = (ev.Start.Node.Entity as Xbim.Common.IPersistEntity)?.EntityLabel ?? 0;
-                                        var tid = (ev.End.Node.Entity as Xbim.Common.IPersistEntity)?.EntityLabel ?? 0;
-                                        ev.IsSelected = (sid != 0 && set.Contains(sid)) || (tid != 0 && set.Contains(tid));
-                                    }
-                                    // 同步 3D 高亮（先清理，再套用新選取）
-                                    if (svc != null)
-                                    {
-                                        // 先清空
-                                        svc.HighlightEntities(Array.Empty<int>(), clearPrevious: true);
-                                        // 再高亮目前選取
-                                        var labels = sel.Selected?.ToArray() ?? Array.Empty<int>();
-                                        if (labels.Length > 0)
-                                            svc.HighlightEntities(labels, clearPrevious: false);
-                                    }
-                                }
-                                catch { }
-                            };
+                                    catch { }
+                                };
+                            }
                         }
+                        catch { }
                     }
                 }
             }

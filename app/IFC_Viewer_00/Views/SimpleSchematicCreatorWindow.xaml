@@ -1,0 +1,19 @@
+<Window x:Class="IFC_Viewer_00.Views.SimpleSchematicCreatorWindow"
+		xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+		xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+		Title="簡易原理圖建立" Height="320" Width="520" WindowStartupLocation="CenterOwner">
+	<Grid Margin="12">
+		<Grid.RowDefinitions>
+			<RowDefinition Height="Auto"/>
+			<RowDefinition Height="*"/>
+			<RowDefinition Height="Auto"/>
+		</Grid.RowDefinitions>
+		<TextBlock Text="此視窗為預留占位，用於未來的簡易原理圖建立精靈。" TextWrapping="Wrap"/>
+		<Border Grid.Row="1" BorderBrush="#DDD" BorderThickness="1" Padding="8" Margin="0,8,0,8">
+			<TextBlock Foreground="#666" Text="目前尚未實作任何互動。您可以關閉此視窗返回主畫面。" TextWrapping="Wrap"/>
+		</Border>
+		<StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+			<Button Content="關閉" Width="80" IsCancel="True"/>
+		</StackPanel>
+	</Grid>
+</Window>

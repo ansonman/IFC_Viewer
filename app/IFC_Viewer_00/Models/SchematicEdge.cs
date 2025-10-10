@@ -5,6 +5,7 @@ namespace IFC_Viewer_00.Models
 {
     public class SchematicEdge
     {
+        public enum EdgeOriginKind { Ports, Geometry, Segment, Rewired }
         public string Id { get; set; } = string.Empty;
         public string StartNodeId { get; set; } = string.Empty;
         public string EndNodeId { get; set; } = string.Empty;
@@ -16,6 +17,7 @@ namespace IFC_Viewer_00.Models
         public IXbimEntity Connection { get; set; } = default!;
         // 由幾何鄰近性推斷出的邊（非 IfcRelConnectsPorts）
         public bool IsInferred { get; set; } = false;
+    public EdgeOriginKind Origin { get; set; } = EdgeOriginKind.Ports;
 
         // --- Sprint 1: 資料擴充 ---
         // 系統/樓層分類（若不可得則為 null）
@@ -37,5 +39,11 @@ namespace IFC_Viewer_00.Models
         // 系統縮寫與類型（例如 CWS / CHW 等；Type 可來自 IfcDistributionSystemEnum 或名稱推導）
         public string? SystemAbbreviation { get; set; }
         public string? SystemType { get; set; }
+
+        // Run 分組識別（依系統 + 尺寸 + 幾何相連/同節點相連而分群）
+        public int? RunId { get; set; }
+
+        // 新增：長度 (mm)（若可計算）
+        public double? LengthMm { get; set; }
     }
 }
