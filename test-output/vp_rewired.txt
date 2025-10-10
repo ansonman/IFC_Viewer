@@ -1,0 +1,1 @@
+TotalEdges=332, VP_Edges(by-node)=40, Rewired(total)=25, RewiredInVP(by-node)=3

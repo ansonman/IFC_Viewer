@@ -332,6 +332,8 @@ namespace IFC_Viewer_00.Views
                 // 建立 VM 與載入資料
                 var service = new SchematicService();
                 var svm = new SchematicViewModel(service, _selectionService);
+                // 關鍵：保存目前模型供 Quick 建構與 Rewire 切換時重建使用
+                try { svm.CurrentModel = iModel; } catch { }
                 await svm.LoadAsync(iModel);
 
                 // 顯示視窗

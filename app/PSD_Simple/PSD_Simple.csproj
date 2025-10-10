@@ -1,0 +1,106 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <PlatformTarget>x64</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+    <ApplicationIcon />
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Xbim.Essentials" Version="6.0.442" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.1" />
+  </ItemGroup>
+
+  <!-- Link 既有 Schematic 模組檔案，避免重複複製 -->
+  <ItemGroup>
+    <!-- Models -->
+    <Compile Include="..\IFC_Viewer_00\Models\SchematicNode.cs">
+      <Link>Linked\Models\SchematicNode.cs</Link>
+    </Compile>
+    <Compile Include="..\IFC_Viewer_00\Models\SchematicEdge.cs">
+      <Link>Linked\Models\SchematicEdge.cs</Link>
+    </Compile>
+    <Compile Include="..\IFC_Viewer_00\Models\SchematicData.cs">
+      <Link>Linked\Models\SchematicData.cs</Link>
+    </Compile>
+    <Compile Include="..\IFC_Viewer_00\Models\LevelInfo.cs">
+      <Link>Linked\Models\LevelInfo.cs</Link>
+    </Compile>
+    <Compile Include="..\IFC_Viewer_00\Models\PipeOrientation.cs">
+      <Link>Linked\Models\PipeOrientation.cs</Link>
+    </Compile>
+
+    <!-- Services -->
+    <Compile Include="..\IFC_Viewer_00\Services\SelectionService.cs">
+      <Link>Linked\Services\SelectionService.cs</Link>
+    </Compile>
+    <Compile Include="..\IFC_Viewer_00\Services\SchematicService.cs">
+      <Link>Linked\Services\SchematicService.cs</Link>
+    </Compile>
+    <Compile Include="..\IFC_Viewer_00\Services\IfcStringHelper.cs">
+      <Link>Linked\Services\IfcStringHelper.cs</Link>
+    </Compile>
+
+    <!-- ViewModels -->
+    <Compile Include="..\IFC_Viewer_00\ViewModels\SchematicViewModel.cs">
+      <Link>Linked\ViewModels\SchematicViewModel.cs</Link>
+    </Compile>
+    <Compile Include="..\IFC_Viewer_00\ViewModels\SchematicViewModel.Extensions.cs">
+      <Link>Linked\ViewModels\SchematicViewModel.Extensions.cs</Link>
+    </Compile>
+
+    <!-- Converters -->
+    <Compile Include="..\IFC_Viewer_00\Converters\InverseScaleConverter.cs">
+      <Link>Linked\Converters\InverseScaleConverter.cs</Link>
+    </Compile>
+    <Compile Include="..\IFC_Viewer_00\Converters\HideLabelForShortEdgeConverter.cs">
+      <Link>Linked\Converters\HideLabelForShortEdgeConverter.cs</Link>
+    </Compile>
+    <Compile Include="..\IFC_Viewer_00\Converters\HalfNegativeConverter.cs">
+      <Link>Linked\Converters\HalfNegativeConverter.cs</Link>
+    </Compile>
+    <Compile Include="..\IFC_Viewer_00\Converters\CenterOnPointConverter.cs">
+      <Link>Linked\Converters\CenterOnPointConverter.cs</Link>
+    </Compile>
+    <Compile Include="..\IFC_Viewer_00\Converters\CenterOffsetWithScaleConverter.cs">
+      <Link>Linked\Converters\CenterOffsetWithScaleConverter.cs</Link>
+    </Compile>
+    <Compile Include="..\IFC_Viewer_00\Converters\EnumDisplayConverter.cs">
+      <Link>Linked\Converters\EnumDisplayConverter.cs</Link>
+    </Compile>
+
+    <!-- Views (XAML + code-behind) -->
+    <Page Include="..\IFC_Viewer_00\Views\SchematicView.xaml">
+      <Link>Linked\Views\SchematicView.xaml</Link>
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+    <Compile Include="..\IFC_Viewer_00\Views\SchematicView.xaml.cs">
+      <Link>Linked\Views\SchematicView.xaml.cs</Link>
+      <DependentUpon>SchematicView.xaml</DependentUpon>
+    </Compile>
+
+    <Page Include="..\IFC_Viewer_00\Views\Dialogs\SystemFilterDialog.xaml">
+      <Link>Linked\Views\Dialogs\SystemFilterDialog.xaml</Link>
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+    <Compile Include="..\IFC_Viewer_00\Views\Dialogs\SystemFilterDialog.xaml.cs">
+      <Link>Linked\Views\Dialogs\SystemFilterDialog.xaml.cs</Link>
+      <DependentUpon>SystemFilterDialog.xaml</DependentUpon>
+    </Compile>
+  </ItemGroup>
+
+  <!-- Link GlobalUsings 以消除 WPF/WinForms 命名衝突（Point/Brush/Application 等） -->
+  <ItemGroup>
+    <Compile Include="..\IFC_Viewer_00\GlobalUsings.cs">
+      <Link>Linked\GlobalUsings.cs</Link>
+    </Compile>
+  </ItemGroup>
+
+</Project>
