@@ -231,7 +231,19 @@ namespace IFC_Viewer_00.ViewModels
     public bool ShowRewiredEndpoints
     {
         get => _showRewiredEndpoints;
-        set { if (_showRewiredEndpoints != value) { _showRewiredEndpoints = value; OnPropertyChanged(nameof(ShowRewiredEndpoints)); } }
+        set
+        {
+            if (_showRewiredEndpoints != value)
+            {
+                _showRewiredEndpoints = value;
+                OnPropertyChanged(nameof(ShowRewiredEndpoints));
+                // 友善提示：若只開端點而關閉「管線」，會看到端點但看不到線條
+                if (_showRewiredEndpoints && !ShowPipes)
+                {
+                    AddLog("[Rewired] 端點標記 On，但『管線』層目前關閉，線條不會顯示（請勾選『管線』層）");
+                }
+            }
+        }
     }
 
     // 只顯示 Rewired（僅顯示虛線及其端點）
@@ -526,6 +538,18 @@ namespace IFC_Viewer_00.ViewModels
                                      })
                                      .ToList();
                     AddLog($"[Rewired] Count={list.Count}");
+                    // 先列系統分桶，便於快速確認 VP / SWP / WP 是否皆有
+                    var bySys = list
+                        .GroupBy(x => string.IsNullOrWhiteSpace(x.Sys) ? "(未指定)" : x.Sys.Trim())
+                        .OrderBy(g => g.Key)
+                        .Select(g => new { Sys = g.Key, Count = g.Count() })
+                        .ToList();
+                    if (bySys.Count > 0)
+                    {
+                        AddLog("[Rewired] By System:");
+                        foreach (var g in bySys)
+                            AddLog($"[Rewired]   System={g.Sys}, Count={g.Count}");
+                    }
                     foreach (var it in list.Take(50))
                     {
                         AddLog($"[Rewired] {it.S} -> {it.T} | Sys={it.Sys} | S=({it.SX:0.##},{it.SY:0.##}) T=({it.TX:0.##},{it.TY:0.##})");
