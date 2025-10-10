@@ -259,6 +259,18 @@ namespace IFC_Viewer_00.ViewModels
                 OnPropertyChanged(nameof(ShowOnlyRewired));
                 AddLog($"[View] 只顯示 Rewired: {(value ? "On" : "Off")}");
                 ApplySystemVisibility();
+                // 額外：切換後即時輸出 Rewired 摘要，協助診斷「沒有任何輸出」情況
+                try
+                {
+                    var all = Edges.Where(e => e.Edge?.Origin == Models.SchematicEdge.EdgeOriginKind.Rewired).ToList();
+                    var vis = Edges.Where(e => e.Edge?.Origin == Models.SchematicEdge.EdgeOriginKind.Rewired && e.Visible).ToList();
+                    AddLog($"[Rewired] 全部={all.Count}, 目前可見={vis.Count}");
+                    if (all.Count == 0)
+                    {
+                        AddLog("[Rewired] 目前沒有任何 Rewired 邊。若剛勾選『穿越配件連線』，請先執行『管網建構(Quick)』或重新載入模型。");
+                    }
+                }
+                catch { }
             }
         }
     }
@@ -469,6 +481,24 @@ namespace IFC_Viewer_00.ViewModels
             // 建構完後進行 2D 後處理（短邊、吸附、合併等）
             try { Apply2DPostprocess(); } catch (Exception pex) { AddLog($"[View] 後處理警告: {pex.Message}"); }
             AddLog($"[Net] 完成: Nodes={report.TotalNodes} Edges={report.TotalEdges} Systems={report.Systems} Runs={report.Runs} ConvertedSegments={report.ConvertedSegments} Rewired={report.RewiredEdges}");
+                    // 建構完成後，補印一次 Rewired 分佈摘要（避免使用者必須先按按鈕才知道未產生）
+                    try
+                    {
+                        var rew = Edges.Where(e => e.Edge?.Origin == Models.SchematicEdge.EdgeOriginKind.Rewired).ToList();
+                        if (rew.Count == 0) AddLog("[Rewired] 本次建構未產生 Rewired 邊");
+                        else
+                        {
+                            var bySys = rew
+                                .Select(e => !string.IsNullOrWhiteSpace(e.Edge?.SystemAbbreviation) ? e.Edge!.SystemAbbreviation! : (e.Edge?.SystemName ?? ""))
+                                .GroupBy(s => string.IsNullOrWhiteSpace(s) ? "(未指定)" : s.Trim())
+                                .OrderBy(g => g.Key)
+                                .Select(g => (Sys: g.Key, Cnt: g.Count()))
+                                .ToList();
+                            AddLog($"[Rewired] 建構產生: 總數={rew.Count}");
+                            foreach (var g in bySys) AddLog($"[Rewired]   System={g.Sys}, Count={g.Cnt}");
+                        }
+                    }
+                    catch { }
                     LastGraphReportJson = System.Text.Json.JsonSerializer.Serialize(report);
                     OnPropertyChanged(nameof(LastGraphReportJson));
                 }
