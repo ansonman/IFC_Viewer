@@ -36,7 +36,7 @@
             <TextBlock Text="{Binding Edges.Count}" FontWeight="Bold" Margin="4,0" VerticalAlignment="Center"/>
             <Button Content="重置視圖" Margin="16,0,0,0" Padding="8,2" Click="ResetView_Click"/>
             <Button Content="存成 PNG" Margin="8,0,0,0" Padding="8,2" Click="SavePng_Click"/>
-            <Button Content="建構管網(Quick)" Margin="8,0,0,0" Padding="8,2" Command="{Binding BuildPipeNetworkCommand}" ToolTip="根據 System + Ports + 幾何 + Fitting 生成快速管網"/>
+            <Button Content="配件線" Margin="8,0,0,0" Padding="8,2" Command="{Binding BuildFittingNetworkCommand}" ToolTip="以配件中心將相鄰端點以星狀連線（使用目前畫布投影平面與現有資料）"/>
             <Separator Margin="8,0"/>
             <Button Content="點 +" Margin="0,0,4,0" Padding="8,2" Command="{Binding IncreaseNodeSizeCommand}"/>
             <Button Content="點 -" Margin="0,0,8,0" Padding="8,2" Command="{Binding DecreaseNodeSizeCommand}"/>
@@ -250,12 +250,19 @@
                                         <Setter Property="Stroke" Value="{Binding EdgeBrush}"/>
                                         <Setter Property="StrokeThickness" Value="{Binding Thickness}"/>
                                         <Style.Triggers>
-                                            <!-- Rewired 的邊以虛線、加粗且高對比色以便辨識 -->
+                                            <!-- Rewired 的邊以虛線、加粗；若為 FittingHub-Elbow 則標紅，否則藍 -->
                                             <DataTrigger Binding="{Binding Edge.Origin}" Value="{x:Static models:SchematicEdge+EdgeOriginKind.Rewired}">
                                                 <Setter Property="StrokeDashArray" Value="6,3"/>
                                                 <Setter Property="StrokeThickness" Value="2.5"/>
                                                 <Setter Property="Stroke" Value="DodgerBlue"/>
                                             </DataTrigger>
+                                            <MultiDataTrigger>
+                                                <MultiDataTrigger.Conditions>
+                                                    <Condition Binding="{Binding Edge.Origin}" Value="{x:Static models:SchematicEdge+EdgeOriginKind.Rewired}"/>
+                                                    <Condition Binding="{Binding Edge.SourceTag}" Value="FittingHub-Elbow"/>
+                                                </MultiDataTrigger.Conditions>
+                                                <Setter Property="Stroke" Value="Red"/>
+                                            </MultiDataTrigger>
                                             <DataTrigger Binding="{Binding Visible}" Value="False">
                                                 <Setter Property="UIElement.Visibility" Value="Collapsed"/>
                                             </DataTrigger>
@@ -439,6 +446,13 @@
                                 </MultiDataTrigger.Conditions>
                                 <Setter Property="UIElement.Visibility" Value="Collapsed"/>
                             </MultiDataTrigger>
+                            <!-- 放到最後：覆蓋前面的『可見』設定 → 對 FittingHub 疊加的 Rewired 邊不顯示端點藍點，只顯示線條 -->
+                            <DataTrigger Binding="{Binding Edge.SourceTag}" Value="FittingHub">
+                                <Setter Property="UIElement.Visibility" Value="Collapsed"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding Edge.SourceTag}" Value="FittingHub-Elbow">
+                                <Setter Property="UIElement.Visibility" Value="Collapsed"/>
+                            </DataTrigger>
                         </Style.Triggers>
                     </Style>
                 </ItemsControl.ItemContainerStyle>

@@ -14,5 +14,7 @@ namespace IFC_Viewer_00.Models
         public IPersistEntity? SystemEntity { get; set; }
         // 擴充：附帶任意分析結果（例如 GraphBuildReport）
         public Dictionary<string, string> Metadata { get; } = new Dictionary<string, string>();
+        // 新增：是否包含可用於離線重構(offline rewire)的種子資料（例如已有人/邊與 NodeKind 等）
+        public bool HasOfflineRewireSeed { get; set; } = false;
     }
 }

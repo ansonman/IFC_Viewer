@@ -50,6 +50,8 @@ namespace IFC_Viewer_00.Modules.PipeAxesWithTerminals.Services
                 CanvasHeight = 800,
                 CanvasPadding = 40
             };
+            // 設定目前模型引用，讓『管網建構(Quick)』可運作
+            try { svm.CurrentModel = model; } catch { }
             await svm.LoadPipeAxesAsync(data);
             svm.AddLog($"生成管段軸線+終端紅點：Nodes={data.Nodes.Count} Plane={plane}");
             var view = new SchematicView { DataContext = svm };

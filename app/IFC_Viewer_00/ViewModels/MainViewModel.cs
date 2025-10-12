@@ -171,6 +171,8 @@ namespace IFC_Viewer_00.ViewModels
                     CanvasHeight = 800,
                     CanvasPadding = 40
                 };
+                // 確保『管網建構(Quick)』可用：傳遞當前模型
+                try { svm.CurrentModel = Model; } catch { }
                 svm.AddLog($"FlowTerminal 數量: {pts3D.Count}");
                 svm.AddLog($"投影平面: {plane}");
 
@@ -471,7 +473,9 @@ namespace IFC_Viewer_00.ViewModels
                         {
                             var service = new SchematicService();
                             // 直接載入已投影的點資料
-                            var svm = new IFC_Viewer_00.ViewModels.SchematicViewModel(service, _selection);
+                    var svm = new IFC_Viewer_00.ViewModels.SchematicViewModel(service, _selection);
+                        // 傳遞當前模型供 Quick 使用
+                        try { svm.CurrentModel = Model; } catch { }
                             await svm.LoadProjectedAsync(result);
                             var view = new IFC_Viewer_00.Views.SchematicView { DataContext = svm };
                             if (!string.IsNullOrWhiteSpace(result.SystemName)) view.Title = $"AS原理圖 - {result.SystemName}";
@@ -523,6 +527,8 @@ namespace IFC_Viewer_00.ViewModels
                     CanvasHeight = 800,
                     CanvasPadding = 40
                 };
+                // 確保『管網建構(Quick)』可用：傳遞當前模型
+                try { svm.CurrentModel = Model; } catch { }
                 svm.AddLog($"選擇平面: {plane}");
                 foreach (var sys in pick.SelectedSystems)
                 {
@@ -620,6 +626,8 @@ namespace IFC_Viewer_00.ViewModels
                     CanvasHeight = 800,
                     CanvasPadding = 40
                 };
+                // 確保『管網建構(Quick)』可用：傳遞當前模型
+                try { svm.CurrentModel = Model; } catch { }
                 await svm.LoadPipeAxesAsync(data);
                 svm.AddLog($"生成管段軸線：Segments={data.Edges.Count} Plane={plane}");
                 var view = new SchematicView { DataContext = svm };
@@ -664,6 +672,8 @@ namespace IFC_Viewer_00.ViewModels
                     CanvasHeight = 800,
                     CanvasPadding = 40
                 };
+                // 確保『管網建構(Quick)』可用：傳遞當前模型
+                try { svm.CurrentModel = Model; } catch { }
                 await svm.LoadPipeAxesAsync(data);
                 svm.AddLog($"生成管段軸線+終端紅點：Nodes={data.Nodes.Count} Plane={plane}");
                 var view = new SchematicView { DataContext = svm };
@@ -709,6 +719,8 @@ namespace IFC_Viewer_00.ViewModels
                     CanvasPadding = 40
                 };
                 svm.AddLog("[PSC P2] 入口：目前沿用 P1 資料管線（之後將替換為 Phase 2 版面配置/互動）");
+                // 確保『管網建構(Quick)』可用：傳遞當前模型
+                try { svm.CurrentModel = Model; } catch { }
                 await svm.LoadPipeAxesAsync(data);
                 svm.AddLog($"生成管段軸線+終端紅點（P2）：Nodes={data.Nodes.Count} Plane={plane}");
                 var view = new SchematicView { DataContext = svm };
@@ -754,6 +766,8 @@ namespace IFC_Viewer_00.ViewModels
                     CanvasPadding = 40
                 };
                 svm.AddLog("[PSC P3] 入口：目前沿用 P1 資料管線（之後將加入 Phase 3 搜尋/佈局/匯出/標籤 等互動）");
+                // 確保『管網建構(Quick)』可用：傳遞當前模型
+                try { svm.CurrentModel = Model; } catch { }
                 await svm.LoadPipeAxesAsync(data);
                 svm.AddLog($"生成管段軸線+終端紅點（P3）：Nodes={data.Nodes.Count} Plane={plane}");
                 var view = new SchematicView { DataContext = svm };
@@ -800,6 +814,8 @@ namespace IFC_Viewer_00.ViewModels
                     CanvasPadding = 40
                 };
                 svm.AddLog("[PSC P4] 入口：在 P3 基礎加入 Fittings (S1) - 僅新增 Fitting 節點，不改 segment 邊拓撲");
+                // 確保『管網建構(Quick)』可用：傳遞當前模型
+                try { svm.CurrentModel = Model; } catch { }
                 await svm.LoadPipeAxesAsync(data);
                 svm.AddLog($"生成管段軸線+終端紅點+Fittings（P4）：Nodes={data.Nodes.Count} Plane={plane}");
                 var view = new SchematicView { DataContext = svm };

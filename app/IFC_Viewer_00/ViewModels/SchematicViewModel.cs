@@ -20,6 +20,8 @@ namespace IFC_Viewer_00.ViewModels
     {
         // 新增：供快速管網建構使用的目前模型引用
     public Xbim.Common.IModel? CurrentModel { get; set; }
+        // 新增：緩存目前畫面所對應的 SchematicData（可作為離線種子）
+        private SchematicData? _currentData;
 
         // 簡化：若原本另一 partial 已實作，請整合；此處提供 fallback 以免編譯錯誤
         private void LoadSchematicData(SchematicData data)
@@ -104,7 +106,7 @@ namespace IFC_Viewer_00.ViewModels
                     // 若已載入模型，立即重建一次以反映更動
                     if (CurrentModel != null)
                     {
-                        try { BuildPipeNetworkCommand.Execute(null); }
+                        try { BuildFittingNetworkCommand.Execute(null); }
                         catch { }
                     }
                 }
@@ -145,8 +147,8 @@ namespace IFC_Viewer_00.ViewModels
     public ICommand CyclePipeColorCommand { get; }
     public ICommand CyclePipeNodeColorCommand { get; }
     public ICommand CyclePipeEdgeColorCommand { get; }
-    // 新增：快速建構管網命令
-    public ICommand BuildPipeNetworkCommand { get; }
+    // 新增：配件為中心建構命令（配件線）
+    public ICommand BuildFittingNetworkCommand { get; }
 
     // 視覺預設
     private double _defaultNodeSize = 8.0; // px
@@ -471,40 +473,41 @@ namespace IFC_Viewer_00.ViewModels
             // 初始化 UI 旗標（與 Service 同步）
             try { _throughFittingRewireEnabled = _service.ThroughFittingRewireEnabled; }
             catch { _throughFittingRewireEnabled = false; }
-            BuildPipeNetworkCommand = new SchematicCommand(async _ =>
+            // 配件線：優先從模型直接抽取「端口→配件中心」星狀連線；無模型時退回 seed 路徑
+            BuildFittingNetworkCommand = new SchematicCommand(async _ =>
             {
                 try
                 {
-                    AddLog("[Net] 開始建構管網 (Quick)");
-            var (data, report) = await _service.BuildPipeNetworkAsync(CurrentModel ?? throw new InvalidOperationException("未載入模型"));
-            BuildFromData(data);
-            // 建構完後進行 2D 後處理（短邊、吸附、合併等）
-            try { Apply2DPostprocess(); } catch (Exception pex) { AddLog($"[View] 後處理警告: {pex.Message}"); }
-            AddLog($"[Net] 完成: Nodes={report.TotalNodes} Edges={report.TotalEdges} Systems={report.Systems} Runs={report.Runs} ConvertedSegments={report.ConvertedSegments} Rewired={report.RewiredEdges}");
-                    // 建構完成後，補印一次 Rewired 分佈摘要（避免使用者必須先按按鈕才知道未產生）
-                    try
+                    if (CurrentModel != null)
                     {
-                        var rew = Edges.Where(e => e.Edge?.Origin == Models.SchematicEdge.EdgeOriginKind.Rewired).ToList();
-                        if (rew.Count == 0) AddLog("[Rewired] 本次建構未產生 Rewired 邊");
-                        else
-                        {
-                            var bySys = rew
-                                .Select(e => !string.IsNullOrWhiteSpace(e.Edge?.SystemAbbreviation) ? e.Edge!.SystemAbbreviation! : (e.Edge?.SystemName ?? ""))
-                                .GroupBy(s => string.IsNullOrWhiteSpace(s) ? "(未指定)" : s.Trim())
-                                .OrderBy(g => g.Key)
-                                .Select(g => (Sys: g.Key, Cnt: g.Count()))
-                                .ToList();
-                            AddLog($"[Rewired] 建構產生: 總數={rew.Count}");
-                            foreach (var g in bySys) AddLog($"[Rewired]   System={g.Sys}, Count={g.Cnt}");
-                        }
+                        // 鎖定 YZ 平面以符合你的視圖（可後續做成設定）
+                        var (data, report) = await _service.BuildFittingNetworkFromModelAsync(CurrentModel, SchematicService.UserProjectionPlane.YZ, onlyElbow: false, flipY: true);
+                        // 已含投影座標，使用 LoadProjected 以避免再挑平面
+                        await LoadProjectedAsync(data);
+                        _currentData = data;
+                        AddLog($"[FittingHub] 完成（FromModel, plane=YZ, onlyElbow=N, flipY=Y）：Nodes={report.TotalNodes} Edges={report.TotalEdges} (Rewired={report.RewiredEdges})");
+                        LastGraphReportJson = System.Text.Json.JsonSerializer.Serialize(report);
+                        OnPropertyChanged(nameof(LastGraphReportJson));
+                        return;
                     }
-                    catch { }
-                    LastGraphReportJson = System.Text.Json.JsonSerializer.Serialize(report);
-                    OnPropertyChanged(nameof(LastGraphReportJson));
+
+                    // 無模型：退回 seed 星狀構建（沿用現有資料座標）
+                    AddLog("[FittingHub] 無模型可用，改用現有資料種子建立配件線（配件中心⇄端點）");
+                    var seed = _currentData ?? _service.LastBuiltData;
+                    if (seed == null || (seed.Nodes?.Count ?? 0) == 0)
+                    { AddLog("[FittingHub] 失敗：沒有可用資料"); return; }
+                    {
+                        var (data2, report2) = await _service.BuildFittingNetworkFromSeedAsync(seed);
+                        await LoadProjectedAsync(data2);
+                        _currentData = data2;
+                        AddLog($"[FittingHub] 完成（FromSeed）：Nodes={report2.TotalNodes} Edges={report2.TotalEdges} (Rewired={report2.RewiredEdges})");
+                        LastGraphReportJson = System.Text.Json.JsonSerializer.Serialize(report2);
+                        OnPropertyChanged(nameof(LastGraphReportJson));
+                    }
                 }
                 catch (Exception ex)
                 {
-                    AddLog("[Net] 失敗: " + ex.Message);
+                    AddLog("[FittingHub] 失敗: " + ex.Message);
                 }
             });
             NodeClickCommand = new SchematicCommand(obj =>
@@ -852,13 +855,17 @@ namespace IFC_Viewer_00.ViewModels
 
         public async Task LoadAsync(IModel model)
         {
+            // 設定目前模型引用，供後續『管網建構(Quick)』與穿越配件切換即時重建使用
+            try { CurrentModel = model; } catch { }
             var data = await _service.GenerateTopologyAsync(model);
             LoadData(data);
+            _currentData = data;
         }
 
         public Task LoadFromDataAsync(SchematicData data)
         {
             LoadData(data);
+            _currentData = data;
             return Task.CompletedTask;
         }
 
