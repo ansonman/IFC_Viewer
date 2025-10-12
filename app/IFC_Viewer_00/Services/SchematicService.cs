@@ -985,17 +985,6 @@ namespace IFC_Viewer_00.Services
                 FittingAvgDegree = fitCount > 0 ? (double)created / Math.Max(1, fitCount) : 0
             };
             sw.Stop(); report.BuildMs = sw.Elapsed.TotalMilliseconds;
-            try { BackfillEdgeSystems(data); } catch { }
-            try
-            {
-                // 穩定輸出：排序節點/邊（有助於重跑一致性）
-                var sortedNodes = data.Nodes.OrderBy(n => n.HostLabel ?? 0).ThenBy(n => n.Id).ToList();
-                var sortedEdges = data.Edges.OrderBy(e => e.Id).ToList();
-                data.Nodes.Clear(); data.Nodes.AddRange(sortedNodes);
-                data.Edges.Clear(); data.Edges.AddRange(sortedEdges);
-            }
-            catch { }
-            try { report.Notes = string.IsNullOrWhiteSpace(report.Notes) ? "FromSeed(FittingHub)" : (report.Notes + ";FromSeed(FittingHub)"); } catch { }
             data.HasOfflineRewireSeed = true;
             LastBuiltData = data;
             return Task.FromResult((data, report));
@@ -1013,27 +1002,6 @@ namespace IFC_Viewer_00.Services
             {
                 var data = new SchematicData();
                 var report = new GraphBuildReport();
-
-                // 收集樣本點以偵測退化投影（使用配件中心與其 Ports 為主）
-                var samplePts = new List<Point3D>(256);
-                try
-                {
-                    foreach (var pf0 in model.Instances.OfType<IIfcPipeFitting>())
-                    {
-                        try { samplePts.Add(GetElementPoint(pf0 as IIfcProduct)); } catch { }
-                        try
-                        {
-                            foreach (var dp in GetPorts(pf0).OfType<IIfcDistributionPort>())
-                            {
-                                var p = GetPortPoint3D(dp); if (p.HasValue) samplePts.Add(p.Value);
-                            }
-                        }
-                        catch { }
-                    }
-                }
-                catch { }
-                bool planeWasDegenerate = false;
-                var finalPlane = ChooseBestPlaneForPoints(samplePts, plane, out planeWasDegenerate);
 
                 (double u, double v) Proj(Point3D p, UserProjectionPlane pl)
                 {
@@ -1081,7 +1049,7 @@ namespace IFC_Viewer_00.Services
 
                     // 中心點（LocalPlacement → 投影）
                     Point3D center3 = GetElementPoint(pf as IIfcProduct);
-                    var (cu, cv) = Proj(center3, finalPlane);
+                    var (cu, cv) = Proj(center3, plane);
                     var center = new SchematicNode
                     {
                         Id = $"F_{fitLbl}",
@@ -1110,7 +1078,7 @@ namespace IFC_Viewer_00.Services
                         if (pLbl == 0) continue;
                         Point3D? pp3 = GetPortPoint3D(port);
                         if (!pp3.HasValue) continue; // 無座標則略過
-                        var (pu, pv) = Proj(pp3.Value, finalPlane);
+                        var (pu, pv) = Proj(pp3.Value, plane);
                         var pn = new SchematicNode
                         {
                             Id = $"P_{pLbl}",
@@ -1159,87 +1127,54 @@ namespace IFC_Viewer_00.Services
                 }
                 foreach (var seg in segments)
                 {
-                    var segPorts = GetPorts(seg).OfType<IIfcDistributionPort>().Take(2).ToList();
+                    var ports = GetPorts(seg).OfType<IIfcDistributionPort>().Take(2).ToList();
+                    if (ports.Count < 2) continue;
+                    var pts3 = ports.Select(GetPortPoint3D).ToList();
+                    if (!pts3[0].HasValue || !pts3[1].HasValue) continue;
+                    var p3a = pts3[0]!.Value;
+                    var p3b = pts3[1]!.Value;
+                    var (ua, va) = Proj(p3a, plane);
+                    var (ub, vb) = Proj(p3b, plane);
 
-                    Point3D p3a, p3b; int la = 0, lb = 0; string? portAName = null, portBName = null; bool usedFallback = false;
-                    IIfcDistributionPort? portA = null, portB = null;
-                    if (segPorts.Count >= 2)
-                    {
-                        var pts3 = segPorts.Select(GetPortPoint3D).ToList();
-                        if (pts3[0].HasValue && pts3[1].HasValue)
-                        {
-                            p3a = pts3[0]!.Value; p3b = pts3[1]!.Value;
-                            la = (segPorts[0] as IPersistEntity)?.EntityLabel ?? 0;
-                            lb = (segPorts[1] as IPersistEntity)?.EntityLabel ?? 0;
-                            portA = segPorts[0]; portB = segPorts[1];
-                            try { portAName = IfcStringHelper.FromValue((segPorts[0] as IIfcRoot)?.Name); } catch { }
-                            try { portBName = IfcStringHelper.FromValue((segPorts[1] as IIfcRoot)?.Name); } catch { }
-                        }
-                        else usedFallback = true;
-                    }
-                    else
-                    {
-                        usedFallback = true;
-                    }
+                    int la = (ports[0] as IPersistEntity)?.EntityLabel ?? 0;
+                    int lb = (ports[1] as IPersistEntity)?.EntityLabel ?? 0;
+                    if (la == 0 || lb == 0) continue;
 
-                    if (usedFallback)
-                    {
-                        // 幾何後援：利用擠出方向與深度估算兩端點
-                        if (!TryGetSegmentDirectionAndLength(seg, out var dir, out var length)) continue;
-                        var center = GetElementPoint(seg as IIfcProduct);
-                        var half = Math.Max(0.0, length) * 0.5;
-                        var n = dir; if (n.LengthSquared > 1e-16) { n.Normalize(); } else { continue; }
-                        p3a = new Point3D(center.X - n.X * half, center.Y - n.Y * half, center.Z - n.Z * half);
-                        p3b = new Point3D(center.X + n.X * half, center.Y + n.Y * half, center.Z + n.Z * half);
-                        // 合成臨時標籤，避免與 Port 衝突
-                        int segLbl = (seg as IPersistEntity)?.EntityLabel ?? 0;
-                        la = unchecked(segLbl * 2 + 0x10000000);
-                        lb = unchecked(segLbl * 2 + 1 + 0x10000000);
-                        portAName = "SegEnd-A"; portBName = "SegEnd-B";
-                    }
-
-                    var (ua, va) = Proj(p3a, finalPlane);
-                    var (ub, vb) = Proj(p3b, finalPlane);
-
-                    // 建立或取用兩端節點（Port 優先；後援端點以合成 Id）
-                    var keyA = la != 0 ? $"P_{la}" : (IfcStringHelper.FromValue((seg as IIfcRoot)?.GlobalId) ?? $"SEG_{(seg as IPersistEntity)?.EntityLabel}_A");
-                    var keyB = lb != 0 ? $"P_{lb}" : (IfcStringHelper.FromValue((seg as IIfcRoot)?.GlobalId) ?? $"SEG_{(seg as IPersistEntity)?.EntityLabel}_B");
-
+                    // 建立或取用兩端 Port 節點（避免重複）
                     if (!portMap.TryGetValue(la, out var na))
                     {
                         var nodeA = new SchematicNode
                         {
-                            Id = keyA,
-                            Name = portAName ?? keyA,
-                            IfcType = la != 0 ? "Port" : "PipeSegmentEnd",
+                            Id = $"P_{la}",
+                            Name = IfcStringHelper.FromValue((ports[0] as IIfcRoot)?.Name) ?? ($"Port_{la}"),
+                            IfcType = "Port",
                             Position3D = p3a,
                             Position2D = new System.Windows.Point(ua, va),
-                            Entity = (la != 0 ? (portA as IPersistEntity) : null) ?? (seg as IPersistEntity),
+                            Entity = ports[0] as IPersistEntity,
                             NodeKind = SchematicNode.SchematicNodeKind.PipeEnd
                         };
-                        string? sn = null, sa = null, st = null; PopulateSystemFromPsets(seg as IIfcProduct, ref sn, ref sa, ref st);
-                        nodeA.SystemName = sn; nodeA.SystemAbbreviation = sa; nodeA.SystemType = st; nodeA.SystemKey = sa ?? sn ?? "(未指定)";
-                        data.Nodes.Add(nodeA);
-                        if (la != 0) portMap[la] = nodeA; // 只有真正 Port 才加入 portMap
-                        na = nodeA;
+                        // 補系統（由 seg Pset 為主）
+                        {
+                            string? sn = null, sa = null, st = null; PopulateSystemFromPsets(seg as IIfcProduct, ref sn, ref sa, ref st);
+                            nodeA.SystemName = sn; nodeA.SystemAbbreviation = sa; nodeA.SystemType = st; nodeA.SystemKey = sa ?? sn ?? "(未指定)";
+                        }
+                        data.Nodes.Add(nodeA); portMap[la] = nodeA; na = nodeA;
                     }
                     if (!portMap.TryGetValue(lb, out var nb))
                     {
                         var nodeB = new SchematicNode
                         {
-                            Id = keyB,
-                            Name = portBName ?? keyB,
-                            IfcType = lb != 0 ? "Port" : "PipeSegmentEnd",
+                            Id = $"P_{lb}",
+                            Name = IfcStringHelper.FromValue((ports[1] as IIfcRoot)?.Name) ?? ($"Port_{lb}"),
+                            IfcType = "Port",
                             Position3D = p3b,
                             Position2D = new System.Windows.Point(ub, vb),
-                            Entity = (lb != 0 ? (portB as IPersistEntity) : null) ?? (seg as IPersistEntity),
+                            Entity = ports[1] as IPersistEntity,
                             NodeKind = SchematicNode.SchematicNodeKind.PipeEnd
                         };
                         string? sn = null, sa = null, st = null; PopulateSystemFromPsets(seg as IIfcProduct, ref sn, ref sa, ref st);
                         nodeB.SystemName = sn; nodeB.SystemAbbreviation = sa; nodeB.SystemType = st; nodeB.SystemKey = sa ?? sn ?? "(未指定)";
-                        data.Nodes.Add(nodeB);
-                        if (lb != 0) portMap[lb] = nodeB;
-                        nb = nodeB;
+                        data.Nodes.Add(nodeB); portMap[lb] = nodeB; nb = nodeB;
                     }
 
                     if (ReferenceEquals(na, nb)) continue;
@@ -1251,7 +1186,7 @@ namespace IFC_Viewer_00.Services
                     string edgeId = IfcStringHelper.FromValue((seg as IIfcRoot)?.GlobalId) ?? $"SEG_{aId}_{bId}_{data.Edges.Count}";
                     var vec = new Vector3D(p3b.X - p3a.X, p3b.Y - p3a.Y, p3b.Z - p3a.Z);
                     double lenMm = vec.Length * unitScaleMm;
-                    ExtractDiameters(model, seg, out var dnMm2, out var doMm2, out var srcDn2, out var srcDo2);
+                    ExtractDiameters(model, seg, out var dnMm, out var doMm, out var srcDn, out var srcDo);
                     var eSeg = new SchematicEdge
                     {
                         Id = edgeId,
@@ -1264,10 +1199,10 @@ namespace IFC_Viewer_00.Services
                         SystemName = na.SystemName ?? nb.SystemName,
                         SystemAbbreviation = na.SystemAbbreviation ?? nb.SystemAbbreviation,
                         SystemType = na.SystemType ?? nb.SystemType,
-                        NominalDiameterMm = dnMm2,
-                        OuterDiameterMm = doMm2,
-                        ValueSourceNominalDiameter = srcDn2,
-                        ValueSourceOuterDiameter = srcDo2,
+                        NominalDiameterMm = dnMm,
+                        OuterDiameterMm = doMm,
+                        ValueSourceNominalDiameter = srcDn,
+                        ValueSourceOuterDiameter = srcDo,
                         LengthMm = lenMm
                     };
                     data.Edges.Add(eSeg); na.Edges.Add(eSeg); nb.Edges.Add(eSeg);
@@ -1281,70 +1216,11 @@ namespace IFC_Viewer_00.Services
                 report.Systems = data.Nodes.Select(n => n.SystemKey).Distinct(StringComparer.OrdinalIgnoreCase).Count();
                 report.FittingMaxDegree = maxDeg;
                 report.FittingAvgDegree = (fitCount > 0) ? (double)created / Math.Max(1, fitCount) : 0;
-                report.Notes = $"FittingHub FromModel: onlyElbow={(onlyElbow?"Y":"N")}, plane={finalPlane}, flipY={(flipY?"Y":"N")}" + (planeWasDegenerate?";PlaneAutoSwitch":"");
-                try { BackfillEdgeSystems(data); } catch { }
-                try
-                {
-                    var sortedNodes2 = data.Nodes.OrderBy(n => n.HostLabel ?? 0).ThenBy(n => n.Id).ToList();
-                    var sortedEdges2 = data.Edges.OrderBy(e => e.Id).ToList();
-                    data.Nodes.Clear(); data.Nodes.AddRange(sortedNodes2);
-                    data.Edges.Clear(); data.Edges.AddRange(sortedEdges2);
-                }
-                catch { }
+                report.Notes = $"FittingHub FromModel: onlyElbow={(onlyElbow?"Y":"N")}, plane={plane}, flipY={(flipY?"Y":"N")}";
                 data.HasOfflineRewireSeed = true;
                 LastBuiltData = data;
                 return (data, report);
             });
-        }
-
-        // 邊的系統欄位回填（若缺失，從兩端節點取值）
-        private static void BackfillEdgeSystems(SchematicData data)
-        {
-            if (data?.Edges == null) return;
-            foreach (var e in data.Edges)
-            {
-                bool missingSys = string.IsNullOrWhiteSpace(e.SystemAbbreviation) && string.IsNullOrWhiteSpace(e.SystemName);
-                if (!missingSys) continue;
-                var a = e.StartNode; var b = e.EndNode;
-                string? abbr = null;
-                if (!string.IsNullOrWhiteSpace(a?.SystemAbbreviation) && !string.Equals(a!.SystemAbbreviation, "(未指定)", StringComparison.OrdinalIgnoreCase)) abbr = a!.SystemAbbreviation;
-                if (string.IsNullOrWhiteSpace(abbr) && !string.IsNullOrWhiteSpace(b?.SystemAbbreviation) && !string.Equals(b!.SystemAbbreviation, "(未指定)", StringComparison.OrdinalIgnoreCase)) abbr = b!.SystemAbbreviation;
-
-                string? name = null;
-                if (!string.IsNullOrWhiteSpace(a?.SystemName) && !string.Equals(a!.SystemName, "(未指定)", StringComparison.OrdinalIgnoreCase)) name = a!.SystemName;
-                if (string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(b?.SystemName) && !string.Equals(b!.SystemName, "(未指定)", StringComparison.OrdinalIgnoreCase)) name = b!.SystemName;
-
-                e.SystemAbbreviation ??= abbr;
-                e.SystemName ??= name;
-                e.SystemAbbreviation ??= a?.SystemAbbreviation ?? b?.SystemAbbreviation;
-                e.SystemName ??= a?.SystemName ?? b?.SystemName;
-                e.SystemType ??= a?.SystemType ?? b?.SystemType;
-            }
-        }
-
-        // 基於樣本 3D 點決定最佳投影平面；若使用者選的平面退化，則改採跨度和最大的平面
-        private static UserProjectionPlane ChooseBestPlaneForPoints(IList<Point3D> pts, UserProjectionPlane chosen, out bool wasDegenerate)
-        {
-            wasDegenerate = false;
-            if (pts == null || pts.Count == 0) return chosen;
-            double minX = pts.Min(p => p.X), maxX = pts.Max(p => p.X);
-            double minY = pts.Min(p => p.Y), maxY = pts.Max(p => p.Y);
-            double minZ = pts.Min(p => p.Z), maxZ = pts.Max(p => p.Z);
-            double rx = Math.Max(1e-12, maxX - minX);
-            double ry = Math.Max(1e-12, maxY - minY);
-            double rz = Math.Max(1e-12, maxZ - minZ);
-            bool IsDeg(UserProjectionPlane pl) => pl switch
-            {
-                UserProjectionPlane.XY => (rx < 1e-6 || ry < 1e-6),
-                UserProjectionPlane.XZ => (rx < 1e-6 || rz < 1e-6),
-                _ => (ry < 1e-6 || rz < 1e-6)
-            };
-            if (!IsDeg(chosen)) return chosen;
-            wasDegenerate = true;
-            double sXY = rx + ry, sXZ = rx + rz, sYZ = ry + rz;
-            if (sXY >= sXZ && sXY >= sYZ) return UserProjectionPlane.XY;
-            if (sXZ >= sXY && sXZ >= sYZ) return UserProjectionPlane.XZ;
-            return UserProjectionPlane.YZ;
         }
 
         private static string NormalizeSystemKey(string key)
