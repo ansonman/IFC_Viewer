@@ -8,8 +8,8 @@ namespace IFC_Viewer_00.Models
 {
     public class SchematicNode
     {
-    // 節點類型（快速版管網分類）
-    public enum SchematicNodeKind { PipeEnd, Fitting, Valve, Terminal, FittingCenter, Other }
+        // 節點類型（快速版管網分類）
+        public enum SchematicNodeKind { PipeEnd, Fitting, Valve, Terminal, Other }
         public string Id { get; set; } = string.Empty;
         public string Name { get; set; } = string.Empty;
         public string IfcType { get; set; } = string.Empty;
@@ -51,11 +51,5 @@ namespace IFC_Viewer_00.Models
 
         // 離線重接線輔助：此節點是否可視為可被穿越的配件（只對 Fitting 類型有效）
         public bool IsFittingCollapsible { get; set; } = false;
-
-        // 配件為中心模式：中心節點與端點需要的附加資訊
-        public string? FittingId { get; set; } // 一般對應 IfcRoot.GlobalId；若無可用 HostLabel 字串化
-        public string? FittingKind { get; set; } // Elbow/Tee/Cross/Reducer/Cap/...（文本即可）
-        public string? CenterSource { get; set; } // LocalPlacement | PortsCentroid | BoundingBox
-        public int? ExpectedPorts { get; set; } // 依型別推定的端口數（用於驗收/診斷）
     }
 }

@@ -2188,6 +2188,12 @@ namespace IFC_Viewer_00.ViewModels
         {
             try
             {
+                // 安全網 0：若『管線』與『點』都關閉，會導致畫面空白 → 自動開啟『管線』層
+                if (!ShowPipes && !ShowAllNodes)
+                {
+                    ShowPipes = true;
+                    AddLog("[View] 已自動開啟『管線』層以避免空畫面（點與管線同時關閉）");
+                }
                 if (Systems.Count == 0)
                 {
                     foreach (var nv in Nodes) nv.Visible = true;
@@ -2196,6 +2202,13 @@ namespace IFC_Viewer_00.ViewModels
                     if (!ShowOnlyRewired) return;
                 }
                 var allowed = Systems.Where(s => s.IsChecked).Select(s => s.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                // 安全網 1：若未勾選任何系統 → 自動視為『全部』
+                if (allowed.Count == 0)
+                {
+                    foreach (var s in Systems) s.IsChecked = true; // 同步 UI
+                    allowed = Systems.Select(s => s.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    AddLog("[Systems] 未勾選任何系統 → 自動顯示全部");
+                }
                 foreach (var nv in Nodes)
                 {
                     string key = !string.IsNullOrWhiteSpace(nv.Node?.SystemAbbreviation)
@@ -2241,6 +2254,24 @@ namespace IFC_Viewer_00.ViewModels
                     foreach (var nv in Nodes)
                     {
                         nv.Visible = nv.Visible && nodesWithRewired.Contains(nv);
+                    }
+                }
+
+                // 安全網 2：若經過所有條件後畫面仍無任何可見節點與邊 → 自動全開（避免黑畫面），並提示原因
+                bool anyVisible = Nodes.Any(n => n.Visible) || Edges.Any(e => e.Visible);
+                if (!anyVisible)
+                {
+                    foreach (var s in Systems) s.IsChecked = true;
+                    foreach (var nv in Nodes) nv.Visible = true;
+                    foreach (var ev in Edges) ev.Visible = true;
+                    if (ShowOnlyRewired)
+                    {
+                        // 若是因『只顯示 Rewired』導致無輸出，維持該模式但提示
+                        AddLog("[Rewired] 只顯示 Rewired 模式下沒有任何可見邊；已暫時顯示全部（請檢查穿越配件設定或系統過濾）");
+                    }
+                    else
+                    {
+                        AddLog("[Systems] 目前過濾條件導致無任何可見項目；已自動顯示全部");
                     }
                 }
             }

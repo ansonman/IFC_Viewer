@@ -71,16 +71,12 @@ namespace IFC_Viewer_00.Tests
                 PropagateSystemFromNeighbors = true
             });
 
-            // Filter: System = VP（以節點為準，避免 Edge.System* 未同步）
-            bool IsVPNode(IFC_Viewer_00.Models.SchematicNode n)
-                => string.Equals(n.SystemKey, "VP", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(n.SystemAbbreviation, "VP", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(n.SystemName, "VP", StringComparison.OrdinalIgnoreCase)
-                || string.Equals((n.SystemName ?? string.Empty).Trim(), "VP 1", StringComparison.OrdinalIgnoreCase);
-
-            var vpNodes = data.Nodes.Where(IsVPNode).ToHashSet();
-            // 將邊歸入 VP：任一端是 VP 即視為 VP 邊
-            var vpEdges = data.Edges.Where(e => IsVPNode(e.StartNode) || IsVPNode(e.EndNode)).ToList();
+            // Filter: System = VP
+            var vpNodes = data.Nodes.Where(n => string.Equals(n.SystemAbbreviation, "VP", StringComparison.OrdinalIgnoreCase)
+                                             || string.Equals(n.SystemName, "VP", StringComparison.OrdinalIgnoreCase)
+                                             || string.Equals(n.SystemKey, "VP", StringComparison.OrdinalIgnoreCase)).ToHashSet();
+            var vpEdges = data.Edges.Where(e => string.Equals(e.SystemAbbreviation, "VP", StringComparison.OrdinalIgnoreCase)
+                                             || string.Equals(e.SystemName, "VP", StringComparison.OrdinalIgnoreCase)).ToList();
 
             // Assert basic sanity
             Assert.NotEmpty(data.Nodes);
@@ -89,33 +85,10 @@ namespace IFC_Viewer_00.Tests
             // Count rewired edges in VP bucket
             var rewiredInVp = vpEdges.Where(e => e.Origin == IFC_Viewer_00.Models.SchematicEdge.EdgeOriginKind.Rewired).ToList();
 
-            // 額外輸出：以 Edge.System* 分桶與以 Node.SystemKey 判斷的差異
-            var byEdgeSystem = data.Edges
-                .GroupBy(e => (e.SystemAbbreviation ?? e.SystemName ?? "(未指定)").Trim())
-                .OrderBy(g => g.Key)
-                .Select(g => new { Sys = g.Key, Count = g.Count(), Rewired = g.Count(e => e.Origin == IFC_Viewer_00.Models.SchematicEdge.EdgeOriginKind.Rewired) })
-                .ToList();
-
             // Output helpful info for diagnostics
-            var msg = $"TotalEdges={data.Edges.Count}, VP_Edges(by-node)={vpEdges.Count}, Rewired(total)={report.RewiredEdges}, RewiredInVP(by-node)={rewiredInVp.Count}";
+            var msg = $"TotalEdges={data.Edges.Count}, VP_Edges={vpEdges.Count}, Rewired={report.RewiredEdges}, RewiredInVP={rewiredInVp.Count}";
             Xunit.Abstractions.ITestOutputHelper? output = null; // if needed, inject via ctor
             Console.WriteLine(msg);
-            Console.WriteLine("By Edge.System bucket:");
-            foreach (var s in byEdgeSystem)
-            {
-                Console.WriteLine($"System={s.Sys}, Edges={s.Count}, Rewired={s.Rewired}");
-            }
-
-            // 寫入檔案，便於外部工具讀取
-            try
-            {
-                var root = TestDataRoot();
-                var outDir = Path.Combine(root, "test-output");
-                Directory.CreateDirectory(outDir);
-                var outFile = Path.Combine(outDir, "vp_rewired.txt");
-                File.WriteAllText(outFile, msg + Environment.NewLine);
-            }
-            catch { }
 
             // Expectation: At least zero; presence indicates ThroughFitting rewire worked for VP
             Assert.True(rewiredInVp.Count >= 0, msg);

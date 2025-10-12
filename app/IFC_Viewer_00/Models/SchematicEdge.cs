@@ -5,7 +5,7 @@ namespace IFC_Viewer_00.Models
 {
     public class SchematicEdge
     {
-    public enum EdgeOriginKind { Ports, Geometry, Segment, Rewired, RewiredViaFittingHub }
+        public enum EdgeOriginKind { Ports, Geometry, Segment, Rewired }
         public string Id { get; set; } = string.Empty;
         public string StartNodeId { get; set; } = string.Empty;
         public string EndNodeId { get; set; } = string.Empty;
@@ -50,7 +50,5 @@ namespace IFC_Viewer_00.Models
         public int[]? RewiredViaFittingLabels { get; set; }
         // 離線重接線輔助：用於追蹤來源（例如 "Ports", "Segment", "Geometry", "ThroughFitting"）
         public string? SourceTag { get; set; }
-        // 配件為中心模式：邊歸屬的 Fitting 標識（如可取得）
-        public int? FittingId { get; set; }
     }
 }
