@@ -77,6 +77,7 @@ namespace IFC_Viewer_00.ViewModels
     public RelayCommand GeneratePipeAxesWithTerminalsP2Command { get; }
     public RelayCommand GeneratePipeAxesWithTerminalsP3Command { get; }
     public RelayCommand GeneratePipeAxesWithTerminalsP4Command { get; }
+    public RelayCommand GeneratePipeAxesWithTerminalsP5Command { get; }
     public RelayCommand ShowPipeOverlay3DCommand { get; }
     public RelayCommand ShowTestOverlay3DCommand { get; }
     public RelayCommand ShowAxesOverlay3DCommand { get; }
@@ -102,6 +103,8 @@ namespace IFC_Viewer_00.ViewModels
             GeneratePipeAxesWithTerminalsP3Command = new RelayCommand(async () => await OnGeneratePipeAxesWithTerminalsP3Async());
             // Phase 4: 在 P3 基礎上加入 Fittings (S1) ，維持獨立入口
             GeneratePipeAxesWithTerminalsP4Command = new RelayCommand(async () => await OnGeneratePipeAxesWithTerminalsP4Async());
+            // Phase 5: 與 P4 同功能，保留未來擴充（改為呼叫模組服務）
+            GeneratePipeAxesWithTerminalsP5Command = new RelayCommand(async () => await OnGeneratePipeAxesWithTerminalsP5Async());
             ShowPipeOverlay3DCommand = new RelayCommand(async () => await OnShowPipeOverlay3DAsync());
             ShowTestOverlay3DCommand = new RelayCommand(OnShowTestOverlay3D);
             ShowAxesOverlay3DCommand = new RelayCommand(() => OnShowAxesOverlay3D());
@@ -825,6 +828,26 @@ namespace IFC_Viewer_00.ViewModels
             catch (Exception ex)
             {
                 MessageBox.Show($"PSC P4 生成失敗: {ex.Message}", "PSC P4", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // Phase 5：模組化入口，轉呼叫 Modules/PSC.P5 服務
+        private async Task OnGeneratePipeAxesWithTerminalsP5Async()
+        {
+            try
+            {
+                if (Model == null)
+                {
+                    StatusMessage = "尚未載入模型";
+                    MessageBox.Show("尚未載入模型", "PSC P5", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                var svc = new IFC_Viewer_00.Modules.PSC.P5.Services.P5SchematicService(_selection);
+                await svc.ShowAsync(Model);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"PSC P5 生成失敗: {ex.Message}", "PSC P5", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 

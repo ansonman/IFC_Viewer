@@ -82,6 +82,11 @@
                     <ToolTip Content="Pipe Schematic Phase 4：P3 + Fittings (S1)；僅新增 Fitting 節點，不變更 Edge 拓撲"/>
                 </Button.ToolTip>
             </Button>
+            <Button x:Name="BtnPSCP5" Content="PSC P5" Margin="8,0,0,0" Padding="10,4" Command="{Binding GeneratePipeAxesWithTerminalsP5Command}">
+                <Button.ToolTip>
+                    <ToolTip Content="Pipe Schematic Phase 5：目前與 P4 等同，作為未來擴充入口"/>
+                </Button.ToolTip>
+            </Button>
             <Button x:Name="BtnShowOverlay3D" Content="3D 顯示中線/端點" Margin="8,0,0,0" Padding="10,4" Command="{Binding ShowPipeOverlay3DCommand}" />
             <Button x:Name="BtnShowTestOverlay3D" Content="3D 測試黑點/黑線" Margin="8,0,0,0" Padding="10,4" Command="{Binding ShowTestOverlay3DCommand}" />
             <Button x:Name="BtnShowAxesOverlay3D" Content="3D 測試三軸箭頭" Margin="8,0,0,0" Padding="10,4" Command="{Binding ShowAxesOverlay3DCommand}" />
