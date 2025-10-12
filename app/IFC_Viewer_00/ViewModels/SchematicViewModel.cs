@@ -478,6 +478,12 @@ namespace IFC_Viewer_00.ViewModels
             {
                 try
                 {
+                    // 避免配件線視圖同時顯示『Rewired 端點』診斷標記
+                    if (ShowRewiredEndpoints)
+                    {
+                        ShowRewiredEndpoints = false;
+                        AddLog("[FittingHub] 自動關閉『標示 Rewired 端點』以免與配件線同時顯示");
+                    }
                     if (CurrentModel != null)
                     {
                         // 鎖定 YZ 平面以符合你的視圖（可後續做成設定）

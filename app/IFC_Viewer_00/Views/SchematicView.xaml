@@ -429,30 +429,17 @@
                         <Setter Property="Canvas.Left" Value="0"/>
                         <Setter Property="Canvas.Top" Value="0"/>
                         <Style.Triggers>
-                            <DataTrigger Binding="{Binding DataContext.ShowRewiredEndpoints, RelativeSource={RelativeSource AncestorType=Window}}" Value="False">
-                                <Setter Property="UIElement.Visibility" Value="Collapsed"/>
-                            </DataTrigger>
+                            <!-- 顯示端點需三條件：為 Rewired 邊、該邊可見、且全域開關 ShowRewiredEndpoints 為 True -->
                             <MultiDataTrigger>
                                 <MultiDataTrigger.Conditions>
                                     <Condition Binding="{Binding Edge.Origin}" Value="{x:Static models:SchematicEdge+EdgeOriginKind.Rewired}"/>
                                     <Condition Binding="{Binding Visible}" Value="True"/>
+                                    <Condition Binding="{Binding DataContext.ShowRewiredEndpoints, RelativeSource={RelativeSource AncestorType=Window}}" Value="True"/>
                                 </MultiDataTrigger.Conditions>
                                 <Setter Property="UIElement.Visibility" Value="Visible"/>
                             </MultiDataTrigger>
-                            <MultiDataTrigger>
-                                <MultiDataTrigger.Conditions>
-                                    <Condition Binding="{Binding Edge.Origin}" Value="{x:Static models:SchematicEdge+EdgeOriginKind.Rewired}"/>
-                                    <Condition Binding="{Binding Visible}" Value="False"/>
-                                </MultiDataTrigger.Conditions>
-                                <Setter Property="UIElement.Visibility" Value="Collapsed"/>
-                            </MultiDataTrigger>
-                            <!-- 放到最後：覆蓋前面的『可見』設定 → 對 FittingHub 疊加的 Rewired 邊不顯示端點藍點，只顯示線條 -->
-                            <DataTrigger Binding="{Binding Edge.SourceTag}" Value="FittingHub">
-                                <Setter Property="UIElement.Visibility" Value="Collapsed"/>
-                            </DataTrigger>
-                            <DataTrigger Binding="{Binding Edge.SourceTag}" Value="FittingHub-Elbow">
-                                <Setter Property="UIElement.Visibility" Value="Collapsed"/>
-                            </DataTrigger>
+                            <!-- 其他情況一律隱藏（包含關閉開關或邊本身不可見） -->
+                            <Setter Property="UIElement.Visibility" Value="Collapsed"/>
                         </Style.Triggers>
                     </Style>
                 </ItemsControl.ItemContainerStyle>
